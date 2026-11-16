@@ -24,11 +24,16 @@ pub struct NoteIndex {
     tags: BTreeMap<String, Vec<PathBuf>>,
     tag_display: BTreeMap<String, String>,
     links: BTreeMap<PathBuf, Vec<String>>,
+    /// All entries, retained for query blocks and other whole-vault views.
+    entries: Vec<Entry>,
 }
 
 impl NoteIndex {
     pub fn build(entries: Vec<Entry>) -> Self {
-        let mut idx = NoteIndex::default();
+        let mut idx = NoteIndex {
+            entries: entries.clone(),
+            ..Default::default()
+        };
         for e in entries {
             idx.titles
                 .insert(e.title.to_ascii_lowercase(), e.path.clone());
@@ -54,6 +59,11 @@ impl NoteIndex {
         idx
     }
 
+    /// Every indexed note entry (for Dataview-style queries).
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
     /// Resolve a wikilink target (which may carry `#heading` / `#^block` and is
     /// case-insensitive) to a note path, trying titles then aliases.
     pub fn resolve(&self, target: &str) -> Option<PathBuf> {
@@ -70,6 +80,59 @@ impl NoteIndex {
             .get(&tag.to_ascii_lowercase())
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// A hierarchical view of every tag, split on `/` (Obsidian-style nested
+    /// tags). Parent counts are the number of distinct notes carrying the tag
+    /// or any of its subtags.
+    pub fn tag_tree(&self) -> Vec<TagNode> {
+        // Build a nested map: segment → (note set, children).
+        #[derive(Default)]
+        struct Node {
+            notes: std::collections::BTreeSet<PathBuf>,
+            children: BTreeMap<String, Node>,
+        }
+        fn insert(nodes: &mut BTreeMap<String, Node>, parts: &[&str], path: &PathBuf) {
+            let Some((first, rest)) = parts.split_first() else {
+                return;
+            };
+            let node = nodes.entry((*first).to_string()).or_default();
+            node.notes.insert(path.clone());
+            insert(&mut node.children, rest, path);
+        }
+        let mut roots: BTreeMap<String, Node> = BTreeMap::new();
+        for (tag, paths) in &self.tags {
+            let display = self
+                .tag_display
+                .get(tag)
+                .cloned()
+                .unwrap_or_else(|| tag.clone());
+            let parts: Vec<&str> = display.split('/').filter(|p| !p.is_empty()).collect();
+            for path in paths {
+                insert(&mut roots, &parts, path);
+            }
+        }
+        fn convert(name: &str, prefix: &str, node: &Node) -> TagNode {
+            let full = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            let mut children = Vec::new();
+            for (child_name, child) in &node.children {
+                children.push(convert(child_name, &full, child));
+            }
+            TagNode {
+                name: name.to_string(),
+                full,
+                count: node.notes.len(),
+                children,
+            }
+        }
+        roots
+            .iter()
+            .map(|(name, node)| convert(name, "", node))
+            .collect()
     }
 
     /// All tags with their note counts, sorted by tag name.
@@ -102,6 +165,17 @@ impl NoteIndex {
         }
         out
     }
+}
+
+/// One node in the hierarchical tag panel (`work`, `work/rust`, …).
+#[derive(Clone, Debug)]
+pub struct TagNode {
+    pub name: String,
+    /// The full tag path, e.g. `work/rust`.
+    pub full: String,
+    /// Number of distinct notes carrying this tag or a subtag.
+    pub count: usize,
+    pub children: Vec<TagNode>,
 }
 
 /// Strip a `#heading` / `#^block` suffix from a wikilink target.

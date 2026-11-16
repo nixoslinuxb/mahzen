@@ -7,7 +7,20 @@
 
 /// Compute 2D positions in roughly the `[-1, 1]` square for `n` nodes joined by
 /// `edges`. Runs `iterations` relaxation steps.
+#[allow(dead_code)]
 pub fn layout(n: usize, edges: &[(usize, usize)], iterations: usize) -> Vec<(f32, f32)> {
+    layout_with(n, edges, iterations, 1.0, 1.0)
+}
+
+/// Like [`layout`], with multipliers for the repulsive force and the spring
+/// attraction (the graph view exposes these as sliders).
+pub fn layout_with(
+    n: usize,
+    edges: &[(usize, usize)],
+    iterations: usize,
+    repulsion_mul: f32,
+    attraction_mul: f32,
+) -> Vec<(f32, f32)> {
     if n == 0 {
         return Vec::new();
     }
@@ -21,7 +34,7 @@ pub fn layout(n: usize, edges: &[(usize, usize)], iterations: usize) -> Vec<(f32
 
     let area = 1.0f32;
     let k = (area / n as f32).sqrt(); // ideal edge length
-    let repulsion = k * k;
+    let repulsion = k * k * repulsion_mul.max(0.05);
 
     for iter in 0..iterations {
         let cooling = 1.0 - (iter as f32 / iterations.max(1) as f32);
@@ -52,7 +65,7 @@ pub fn layout(n: usize, edges: &[(usize, usize)], iterations: usize) -> Vec<(f32
             let dx = pos[a].0 - pos[b].0;
             let dy = pos[a].1 - pos[b].1;
             let dist = (dx * dx + dy * dy).sqrt().max(1e-4);
-            let force = (dist * dist) / k;
+            let force = (dist * dist) / k * attraction_mul.max(0.05);
             let (ux, uy) = (dx / dist, dy / dist);
             disp[a].0 -= ux * force;
             disp[a].1 -= uy * force;

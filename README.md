@@ -148,6 +148,31 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   line shows its raw markup in full rather than hiding the non-caret spans, so it is a
   *line-accurate* hybrid, not character-accurate WYSIWYG. True WYSIWYG needs a custom
   rich-text engine (not built).
+- **Concealed markdown (WYSIWYG editing)** — the default editor hides inline
+  markup (`**`, `*`, `~~`, backticks, `#` heading markers, `> `, wikilink
+  brackets and link URLs) and styles the content instead: headings are enlarged,
+  bold/italic/strikethrough are rendered, code gets a background, wikilinks look
+  like links. The caret and selection stay character-accurate because the layout
+  keeps the original bytes (hidden markers collapse to near-zero width). Toggle
+  it with the palette command *Toggle concealed markdown*.
+- **Find / replace in the current note** — `Ctrl+F` (or `Ctrl+H`) opens an
+  inline find bar with match highlighting, case toggle, next/previous, and
+  **Replace** / **Replace all**. `Ctrl+Shift+F` still runs the vault-wide search.
+- **Split note pane** — *Toggle second note pane* (palette) shows a second note
+  beside the active one; `Ctrl+click` any tab to load it into that pane. Each
+  pane keeps its own view mode and scroll position.
+- **Column edit / multi-cursor helper** — *Column edit* inserts the same text at
+  a column (or at the end of every line) over a line range, for the common
+  "edit every selected line at once" workflow.
+- **Spell check** — *Toggle spell check* underlines misspelled words using an
+  offline system dictionary (`/usr/share/dict/*`, cracklib, or Hunspell `.dic`),
+  skipping code, URLs, wikilink targets and frontmatter.
+- **Properties editor** — the right panel lists every YAML frontmatter property
+  (not just `title`/`aliases`/`tags`) and lets you add, edit (scalar or list),
+  rename and delete arbitrary properties.
+- **Tag management** — the tag panel is now hierarchical (`work`, `work/rust`,
+  …); *Manage tags* renames, merges or deletes a tag across every note, updating
+  both the frontmatter `tags` lists and inline `#tags` (subtags included).
 - **Vim mode** — toggled from the command palette; a full modal editing layer
   (`src/vim.rs`): Normal/Insert/Visual, motions, operators, `p`/`P`, `r`, `u`,
   **text objects** (`iw aw i( a( i" i' i[ i{ ip` with `d`/`c`/`y`), and **`.`-repeat**.
@@ -204,22 +229,52 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
 - **Mermaid (built-in)** — ` ```mermaid ` fences render **without any external tool**:
   a native renderer for flowcharts (`graph`/`flowchart` TD/LR, node shapes, `-->`,
   `---`, `-.->`, `==>`, edge labels, chained arrows) parses, lays out, and draws the
-  diagram. Other Mermaid diagram types fall back to `mmdc` (if installed) then to a
-  source block.
+  diagram. Sequence diagrams and pie charts are also native (see below); any
+  other Mermaid type falls back to `mmdc` (if installed) then to a source block.
 - **Richer backlinks** — the right panel shows **Backlinks** (with line numbers and
   context) plus **Unlinked mentions** (title/alias appearing as plain text).
-- **Search power** — the search box understands a query language: plain terms,
-  `"quoted phrases"`, `tag:`, `path:`, `file:`, `/regex/`, and `-` negation (all ANDed).
-- **Math** — `$inline$` and `$$display$$` LaTeX is prettified to Unicode
-  (Greek, operators, super/subscripts) — see `src/math.rs`.
 - **Workspace persistence** — open tabs, active tab, and panel state are restored.
 - **Markdown extensions** — GitHub tables, callouts, footnotes, strikethrough,
-  `[text](url)` links (via `xdg-open`), plus everything listed below.
+  `[text](url)` links (via `xdg-open`), **`==highlight==`**, **`%%comments%%`**
+  (multi-line too), inline HTML (tags are stripped, `<br>` becomes a line
+  break), **nested callouts**, **sized embeds** (`![[image.png|300]]` or
+  `![[image.png|300x200]]`), hover previews on wikilinks, and block references
+  (`^block-id` + the *Copy block reference* command).
+- **Native LaTeX math** — a real math typesetter replaced the old Unicode
+  prettifier: `\frac`, `\sqrt` (with index), `^`/`_` scripts, `\sum`/`\int`
+  with limits, `\left…\right` scalable delimiters, matrices
+  (`pmatrix`/`bmatrix`/`vmatrix`/`matrix`), `aligned`/`cases`, `\text`,
+  accents (`\overline`, `\hat`, `\vec`, `\dot`) and the usual Greek/operator
+  symbols are laid out and drawn natively.
+- **More Mermaid, natively** — besides flowcharts, **sequence diagrams** and
+  **pie charts** render without `mmdc`; anything else still falls back to the
+  CLI when installed.
+- **Visual table editing** — *Edit table* opens a grid editor for the table in
+  the note: edit cells, add/remove rows and columns, then write it back.
+- **Query blocks (Dataview/Bases style)** — fenced `query` blocks (triple-backtick + `query`, or `dataview`) run a
+  small query language against the vault: `table`/`list`/`task`, `from #tag`
+  or `"Folder"`, `where field op value` (`=`, `!=`, `>`, `<`, `contains`,
+  truthiness), `sort field asc|desc` and `limit N`. Fields include
+  `file.name`, `file.path`, `file.folder`, `tags`, `aliases`, `todo`, `done`
+  and any frontmatter property.
+- **Richer graph** — edges now show **direction arrows**, nodes can be coloured
+  by tag via **colour groups** (persisted), and the force layout exposes
+  **repulsion**/**attraction** sliders with a recompute button.
+- **Richer canvas cards** — link cards fetch their page **title and
+  description** in the background, and **PDF cards** (context menu → *New PDF
+  card…*) render a **first-page preview** through `pdftoppm` when available.
+- **Search power** — plain terms, `"quoted phrases"`, `tag:`, `path:`, `file:`,
+  `property:key=value`, `task:todo|done`, `section:"Heading"`, `line:N` /
+  `line:>N` / `line:10-20`, `/regex/`, `-` negation and **`OR`** (all other
+  terms are ANDed). Find/replace in the current note is covered above.
 
 ### Not implemented (yet)
 
-Nothing from the earlier gap list remains unimplemented except **sync**, which was
-out of scope by request.
+The markdown/visualisation gap list is closed: real LaTeX, native sequence/pie
+Mermaid, the extra markdown syntaxes, table editing, query blocks, richer graph
+and canvas cards, and the extended search language are all implemented. **Sync**
+remains out of scope by request, and arbitrary third-party Mermaid diagram
+types still fall back to `mmdc`.
 
 ## Logo
 

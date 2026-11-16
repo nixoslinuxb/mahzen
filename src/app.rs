@@ -19,6 +19,7 @@ use crate::markdown;
 use crate::media;
 use crate::palette;
 use crate::passwords;
+use crate::query;
 use crate::search;
 use crate::theme;
 use crate::vault::{TreeNode, Vault};
@@ -28,6 +29,8 @@ use crate::vim;
 type FeedRx = mpsc::Receiver<(u32, Result<(String, Vec<feeds::Item>), String>)>;
 /// Results from a background favicon fetch (url, bytes).
 type FaviconRx = mpsc::Receiver<(String, Result<Vec<u8>, String>)>;
+/// Results from a background web-card metadata fetch (url, (title, description)).
+type WebMetaRx = mpsc::Receiver<(String, Result<(String, String), String>)>;
 
 /// What kind of file the attachment picker is looking for.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -35,6 +38,7 @@ enum AttachKind {
     Image,
     Audio,
     Video,
+    Pdf,
 }
 
 /// A playback action chosen from the inline media controls.
@@ -81,6 +85,7 @@ impl AttachKind {
             AttachKind::Image => "image",
             AttachKind::Audio => "voice recording / audio",
             AttachKind::Video => "video",
+            AttachKind::Pdf => "PDF",
         }
     }
     fn matches(self, ext: &str) -> bool {
@@ -88,6 +93,7 @@ impl AttachKind {
             AttachKind::Image => is_image_ext(ext),
             AttachKind::Audio => is_audio_ext(ext),
             AttachKind::Video => is_video_ext(ext),
+            AttachKind::Pdf => ext == "pdf",
         }
     }
     fn start_dir(self) -> PathBuf {
@@ -98,6 +104,7 @@ impl AttachKind {
             AttachKind::Image => vec!["Pictures", "Images"],
             AttachKind::Audio => vec!["Music", "Recordings", "Voice"],
             AttachKind::Video => vec!["Videos", "Movies"],
+            AttachKind::Pdf => vec!["Documents", "Downloads"],
         };
         for c in candidates {
             let p = home.join(c);
@@ -236,6 +243,18 @@ fn canvas_color(code: &str) -> Option<Color32> {
 
 const CANVAS_COLORS: [&str; 6] = ["1", "2", "3", "4", "5", "6"];
 
+/// Graph colour-group palette.
+const GROUP_COLORS: [Color32; 8] = [
+    Color32::from_rgb(0x8a, 0x5c, 0xf5),
+    Color32::from_rgb(0x4f, 0xc1, 0x9a),
+    Color32::from_rgb(0xe0, 0x8c, 0x4f),
+    Color32::from_rgb(0x5a, 0x9c, 0xe0),
+    Color32::from_rgb(0xd0, 0x5f, 0x8f),
+    Color32::from_rgb(0xb8, 0xc0, 0x4f),
+    Color32::from_rgb(0x9a, 0x7a, 0xd0),
+    Color32::from_rgb(0x66, 0xb8, 0xb8),
+];
+
 /// How the window is shown at startup / after toggling.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WindowMode {
@@ -309,6 +328,15 @@ enum Command {
     WindowMode,
     ToggleVim,
     TogglePreview,
+    ToggleWysiwyg,
+    ToggleSpellcheck,
+    ToggleSplitPane,
+    FindInNote,
+    ColumnEdit,
+    Properties,
+    TagManager,
+    EditTable,
+    CopyBlockRef,
     TogglePanel,
     ToggleGraph,
     Lock,
@@ -317,7 +345,7 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 22] = [
+    const ALL: [Command; 31] = [
         Command::NewNote,
         Command::NewSubnote,
         Command::OpenVault,
@@ -335,6 +363,15 @@ impl Command {
         Command::WindowMode,
         Command::ToggleVim,
         Command::TogglePreview,
+        Command::ToggleWysiwyg,
+        Command::ToggleSpellcheck,
+        Command::ToggleSplitPane,
+        Command::FindInNote,
+        Command::ColumnEdit,
+        Command::Properties,
+        Command::TagManager,
+        Command::EditTable,
+        Command::CopyBlockRef,
         Command::TogglePanel,
         Command::ToggleGraph,
         Command::Lock,
@@ -361,6 +398,15 @@ impl Command {
             Command::WindowMode => "Cycle window mode (F11)",
             Command::ToggleVim => "Toggle Vim mode",
             Command::TogglePreview => "Cycle editor view (edit/split/preview)",
+            Command::ToggleWysiwyg => "Toggle concealed markdown (WYSIWYG editing)",
+            Command::ToggleSpellcheck => "Toggle spell check",
+            Command::ToggleSplitPane => "Toggle second note pane (split view)",
+            Command::FindInNote => "Find / replace in current note (Ctrl+F)",
+            Command::ColumnEdit => "Column edit / multi-cursor insert",
+            Command::Properties => "Edit note properties (frontmatter)",
+            Command::TagManager => "Manage tags (rename / merge / delete)",
+            Command::EditTable => "Edit table visually",
+            Command::CopyBlockRef => "Copy block reference for the current line",
             Command::TogglePanel => "Toggle side panel",
             Command::ToggleGraph => "Toggle graph view",
             Command::Lock => "Lock the vault",
@@ -388,6 +434,15 @@ impl Command {
             Command::WindowMode => Icon::PanelRight,
             Command::ToggleVim => Icon::Edit,
             Command::TogglePreview => Icon::Split,
+            Command::ToggleWysiwyg => Icon::Live,
+            Command::ToggleSpellcheck => Icon::CheckCircle,
+            Command::ToggleSplitPane => Icon::Split,
+            Command::FindInNote => Icon::Search,
+            Command::ColumnEdit => Icon::File,
+            Command::Properties => Icon::Edit,
+            Command::TagManager => Icon::Tag,
+            Command::EditTable => Icon::File,
+            Command::CopyBlockRef => Icon::Link,
             Command::TogglePanel => Icon::PanelRight,
             Command::ToggleGraph => Icon::Graph,
             Command::Lock => Icon::Lock,
@@ -536,6 +591,42 @@ pub struct EncryptedNoteApp {
     vim: crate::vim::Vim,
     /// The line being edited in Live Preview mode.
     live_line: usize,
+    /// A second note pane shown beside the active one (tab index).
+    secondary: Option<usize>,
+    secondary_live_line: usize,
+    /// Find/replace bar.
+    find_open: bool,
+    find_query: String,
+    find_replace: String,
+    find_case: bool,
+    find_match: usize,
+    find_focus: bool,
+    /// Character range to select in the editor on the next frame.
+    pending_select: Option<(usize, usize)>,
+    /// Properties (frontmatter) editor dialog.
+    prop_edit_open: bool,
+    prop_key: String,
+    prop_value: String,
+    prop_is_list: bool,
+    prop_original: Option<String>,
+    prop_error: Option<String>,
+    /// Tag manager dialog.
+    tag_manager_open: bool,
+    tag_rename_from: String,
+    tag_rename_to: String,
+    /// Column edit / multi-cursor insert dialog.
+    column_edit_open: bool,
+    column_start: usize,
+    column_end: usize,
+    column_index: usize,
+    column_text: String,
+    column_mode: usize,
+    /// Cached spell-check results (hash of buffer, misspelled words).
+    spell_cache: (u64, HashSet<String>),
+    /// Visual table editor state.
+    table_edit_open: bool,
+    table_rows: Vec<Vec<String>>,
+    table_span: Option<(usize, usize)>,
     /// An open canvas board, if any.
     canvas: Option<CanvasView>,
     /// The RSS reader.
@@ -555,6 +646,15 @@ pub struct EncryptedNoteApp {
     feed_refreshing: bool,
     /// Attachment file chooser.
     attach_picker: Option<FilePicker>,
+    /// Canvas PDF card file chooser.
+    canvas_pdf_picker: Option<FilePicker>,
+    canvas_pdf_mode: bool,
+    /// Cached web-card metadata (url → title, description).
+    canvas_web_cache: HashMap<String, (String, String)>,
+    canvas_web_rx: Option<WebMetaRx>,
+    canvas_web_pending: HashSet<String>,
+    /// PDFs currently being rasterised by pdftoppm.
+    canvas_pdf_pending: HashSet<String>,
     /// Full-article fetch results (keyed by link).
     feed_full_rx: Option<mpsc::Receiver<(String, Result<String, String>)>>,
     feed_full_loading: Option<String>,
@@ -593,6 +693,9 @@ pub struct EncryptedNoteApp {
     graph_depth: usize,
     graph_tag: String,
     graph_show_orphans: bool,
+    /// Graph colour-group editor fields.
+    graph_group_tag: String,
+    graph_group_color: usize,
 
     // In-app media playback (audio / video) for note attachments.
     player: Option<media::Player>,
@@ -683,6 +786,8 @@ pub struct EncryptedNoteApp {
     pending_open_vault: Option<PathBuf>,
 
     status: String,
+    /// Text to put on the clipboard on the next frame.
+    pending_clipboard: Option<String>,
     last_autosave: f64,
     /// Last window title we sent (to avoid per-frame viewport commands).
     window_title: String,
@@ -740,6 +845,34 @@ impl EncryptedNoteApp {
             palette: None,
             vim: crate::vim::Vim::new(),
             live_line: 0,
+            secondary: None,
+            secondary_live_line: 0,
+            find_open: false,
+            find_query: String::new(),
+            find_replace: String::new(),
+            find_case: false,
+            find_match: 0,
+            find_focus: false,
+            pending_select: None,
+            prop_edit_open: false,
+            prop_key: String::new(),
+            prop_value: String::new(),
+            prop_is_list: false,
+            prop_original: None,
+            prop_error: None,
+            tag_manager_open: false,
+            tag_rename_from: String::new(),
+            tag_rename_to: String::new(),
+            column_edit_open: false,
+            column_start: 1,
+            column_end: 1,
+            column_index: 0,
+            column_text: String::new(),
+            column_mode: 0,
+            spell_cache: (0, HashSet::new()),
+            table_edit_open: false,
+            table_rows: Vec::new(),
+            table_span: None,
             canvas: None,
             feeds_open: false,
             feeds: feeds::Store::load(),
@@ -755,6 +888,12 @@ impl EncryptedNoteApp {
             feed_rx: None,
             feed_refreshing: false,
             attach_picker: None,
+            canvas_pdf_picker: None,
+            canvas_pdf_mode: false,
+            canvas_web_cache: HashMap::new(),
+            canvas_web_rx: None,
+            canvas_web_pending: HashSet::new(),
+            canvas_pdf_pending: HashSet::new(),
             feed_full_rx: None,
             feed_full_loading: None,
             canvas_pick: None,
@@ -780,6 +919,8 @@ impl EncryptedNoteApp {
             graph_depth: 2,
             graph_tag: String::new(),
             graph_show_orphans: true,
+            graph_group_tag: String::new(),
+            graph_group_color: 0,
             player: None,
             player_path: PathBuf::new(),
             player_tex: None,
@@ -834,6 +975,7 @@ impl EncryptedNoteApp {
             pending_open: None,
             pending_open_vault: None,
             status: String::new(),
+            pending_clipboard: None,
             last_autosave: 0.0,
             window_title: String::new(),
             last_screen: None,
@@ -984,6 +1126,56 @@ impl EncryptedNoteApp {
         self.rebuild_graph();
     }
 
+    /// Build the note snapshot used by ```query blocks.
+    fn query_docs(&self) -> Vec<query::Doc> {
+        let root = self.vault.as_ref().map(|v| v.root.clone());
+        self.index
+            .entries()
+            .iter()
+            .map(|e| {
+                let rel = root
+                    .as_ref()
+                    .and_then(|r| e.path.strip_prefix(r).ok())
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| e.path.to_string_lossy().to_string());
+                let folder = Path::new(&rel)
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let meta = self.metas.get(&e.path);
+                let props: Vec<(String, String)> = meta
+                    .map(|m| {
+                        m.props
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.display()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let body = meta.map(|m| m.body.as_str()).unwrap_or("");
+                let mut todo = 0;
+                let mut done = 0;
+                for line in body.lines() {
+                    let t = line.trim_start();
+                    if t.starts_with("- [ ]") || t.starts_with("* [ ]") {
+                        todo += 1;
+                    } else if t.starts_with("- [x]") || t.starts_with("* [x]") {
+                        done += 1;
+                    }
+                }
+                query::Doc {
+                    title: e.title.clone(),
+                    path: rel,
+                    folder,
+                    tags: e.tags.clone(),
+                    aliases: e.aliases.clone(),
+                    props,
+                    tasks_todo: todo,
+                    tasks_done: done,
+                }
+            })
+            .collect()
+    }
+
     /// Recompute the graph node/edge layout from the current index.
     fn rebuild_graph(&mut self) {
         let nodes: Vec<PathBuf> = self
@@ -1004,7 +1196,13 @@ impl EncryptedNoteApp {
                 }
             }
         }
-        self.graph_pos = graph::layout(nodes.len(), &edges, 120);
+        self.graph_pos = graph::layout_with(
+            nodes.len(),
+            &edges,
+            140,
+            self.config.graph_repulsion,
+            self.config.graph_attraction,
+        );
         self.graph_nodes = nodes;
         self.graph_edges = edges;
     }
@@ -1057,6 +1255,532 @@ impl EncryptedNoteApp {
         }
     }
 
+    // ---------------------------------------------------- editor workspace
+
+    /// Show/hide the second note pane. When showing it, pick a different open
+    /// note if possible; otherwise show the same note in two views.
+    fn toggle_split_pane(&mut self) {
+        if self.secondary.is_some() {
+            self.secondary = None;
+            self.status = "Second pane closed".into();
+            return;
+        }
+        if self.tabs.is_empty() {
+            self.status = "Open a note first".into();
+            return;
+        }
+        let pick = if self.tabs.len() > 1 {
+            (self.active + 1) % self.tabs.len()
+        } else {
+            self.active
+        };
+        self.secondary = Some(pick);
+        self.secondary_live_line = 0;
+        self.status = "Second pane: Ctrl+click a tab to change it".into();
+    }
+
+    /// Cached spell-check results for `text` (recomputed only when it changes).
+    fn misspellings_for(&mut self, text: &str) -> HashSet<String> {
+        use std::hash::{Hash, Hasher};
+        if !self.config.spellcheck {
+            return HashSet::new();
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        let hash = h.finish();
+        if self.spell_cache.0 != hash {
+            let found = crate::spell::misspellings(text);
+            self.spell_cache = (hash, found);
+        }
+        self.spell_cache.1.clone()
+    }
+
+    /// All non-overlapping matches of `needle` in `haystack` (byte ranges).
+    fn find_matches(haystack: &str, needle: &str, case_sensitive: bool) -> Vec<(usize, usize)> {
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let (hay, pat) = if case_sensitive {
+            (haystack.to_string(), needle.to_string())
+        } else {
+            (haystack.to_lowercase(), needle.to_lowercase())
+        };
+        // Lowercasing can change byte lengths (rare); fall back to a char scan
+        // when the lengths differ so ranges stay valid.
+        if hay.len() != haystack.len() || pat.len() != needle.len() {
+            let hchars: Vec<char> = haystack.chars().collect();
+            let pchars: Vec<char> = needle.chars().collect();
+            let mut out = Vec::new();
+            let mut i = 0;
+            while i + pchars.len() <= hchars.len() {
+                let hit = (0..pchars.len()).all(|k| {
+                    let a = hchars[i + k];
+                    let b = pchars[k];
+                    if case_sensitive {
+                        a == b
+                    } else {
+                        a.to_lowercase().eq(b.to_lowercase())
+                    }
+                });
+                if hit {
+                    let start = hchars[..i].iter().map(|c| c.len_utf8()).sum();
+                    let end = start
+                        + hchars[i..i + pchars.len()]
+                            .iter()
+                            .map(|c| c.len_utf8())
+                            .sum::<usize>();
+                    out.push((start, end));
+                    i += pchars.len();
+                } else {
+                    i += 1;
+                }
+            }
+            return out;
+        }
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(p) = hay[from..].find(&pat) {
+            let start = from + p;
+            let end = start + pat.len();
+            out.push((start, end));
+            from = end.max(start + 1);
+        }
+        out
+    }
+
+    /// Select the current find match in the editor.
+    fn jump_to_match(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let text = tab.text.clone();
+        let matches = Self::find_matches(&text, &self.find_query, self.find_case);
+        if matches.is_empty() {
+            self.status = format!("No matches for '{}'", self.find_query);
+            return;
+        }
+        let idx = self.find_match % matches.len();
+        let (start, end) = matches[idx];
+        let cstart = text[..start].chars().count();
+        let cend = cstart + text[start..end].chars().count();
+        self.pending_select = Some((cstart, cend));
+        self.status = format!("{} of {} matches", idx + 1, matches.len());
+    }
+
+    fn find_next(&mut self, forward: bool) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let text = tab.text.clone();
+        let count = Self::find_matches(&text, &self.find_query, self.find_case).len();
+        if count == 0 {
+            self.status = format!("No matches for '{}'", self.find_query);
+            return;
+        }
+        self.find_match = if forward {
+            (self.find_match + 1) % count
+        } else {
+            (self.find_match + count - 1) % count
+        };
+        self.jump_to_match();
+    }
+
+    fn replace_current(&mut self) {
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            return;
+        };
+        let text = tab.text.clone();
+        let matches = Self::find_matches(&text, &self.find_query, self.find_case);
+        if matches.is_empty() {
+            self.status = "No matches to replace".into();
+            return;
+        }
+        let (start, end) = matches[self.find_match % matches.len()];
+        let mut out = String::with_capacity(text.len());
+        out.push_str(&text[..start]);
+        out.push_str(&self.find_replace);
+        out.push_str(&text[end..]);
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(tab.text.clone());
+        tab.redo.clear();
+        tab.text = out;
+        self.jump_to_match();
+    }
+
+    fn replace_all(&mut self) {
+        let idx = self.active;
+        if self.find_query.is_empty() {
+            self.status = "Enter something to replace".into();
+            return;
+        }
+        let Some(tab) = self.tabs.get(idx) else {
+            return;
+        };
+        let text = tab.text.clone();
+        let matches = Self::find_matches(&text, &self.find_query, self.find_case);
+        if matches.is_empty() {
+            self.status = "No matches to replace".into();
+            return;
+        }
+        let count = matches.len();
+        let mut out = String::with_capacity(text.len());
+        let mut last = 0;
+        for (s, e) in &matches {
+            out.push_str(&text[last..*s]);
+            out.push_str(&self.find_replace);
+            last = *e;
+        }
+        out.push_str(&text[last..]);
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(tab.text.clone());
+        tab.redo.clear();
+        tab.text = out;
+        self.find_match = 0;
+        self.status = format!("Replaced {count} occurrence(s)");
+    }
+
+    /// Open the column edit dialog, pre-filling the line range with the current
+    /// selection (or just the caret's line).
+    fn open_column_edit(&mut self, ctx: &egui::Context) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            self.status = "Open a note first".into();
+            return;
+        };
+        let text = tab.text.clone();
+        let mut start_line = 0;
+        let mut end_line = 0;
+        if let Some((a, b)) = self.current_selection(ctx) {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            start_line = text.chars().take(lo).filter(|c| *c == '\n').count();
+            end_line = text.chars().take(hi).filter(|c| *c == '\n').count();
+        }
+        self.column_start = start_line + 1;
+        self.column_end = end_line + 1;
+        self.column_index = 0;
+        self.column_mode = 0;
+        self.column_text.clear();
+        self.column_edit_open = true;
+    }
+
+    /// Read the active editor's current character selection, if any.
+    fn current_selection(&self, ctx: &egui::Context) -> Option<(usize, usize)> {
+        let id = egui::Id::new(("editor", self.active, 0u8));
+        let state = egui::text_edit::TextEditState::load(ctx, id)?;
+        let range = state.cursor.char_range()?;
+        let [a, b] = range.sorted();
+        Some((a.index, b.index))
+    }
+
+    /// Apply a block insert / append to the selected lines (the multi-cursor
+    /// workhorse: one edit at the same column on every line).
+    fn apply_column_edit(&mut self) {
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            return;
+        };
+        if self.column_start == 0 || self.column_end < self.column_start {
+            self.status = "Invalid line range".into();
+            return;
+        }
+        let old = tab.text.clone();
+        let mut lines: Vec<String> = old.split('\n').map(String::from).collect();
+        let start = (self.column_start - 1).min(lines.len().saturating_sub(1));
+        let end = (self.column_end - 1).min(lines.len().saturating_sub(1));
+        let mut changed = 0;
+        for line in lines.iter_mut().take(end + 1).skip(start) {
+            if self.column_mode == 0 {
+                let chars: Vec<char> = line.chars().collect();
+                let col = self.column_index.min(chars.len());
+                let byte = chars[..col].iter().map(|c| c.len_utf8()).sum();
+                line.insert_str(byte, &self.column_text);
+            } else {
+                line.push_str(&self.column_text);
+            }
+            changed += 1;
+        }
+        if changed == 0 {
+            self.status = "Nothing to edit".into();
+            return;
+        }
+        let new_text = lines.join("\n");
+        if new_text == old {
+            return;
+        }
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(old);
+        tab.redo.clear();
+        tab.text = new_text;
+        self.column_edit_open = false;
+        self.status = format!("Edited {changed} line(s)");
+    }
+
+    /// Find the first table (or the one at the caret) and open the visual editor.
+    fn open_table_editor(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            self.status = "Open a note first".into();
+            return;
+        };
+        let text = tab.text.clone();
+        let lines: Vec<&str> = text.lines().collect();
+        let mut found = None;
+        let mut i = 0;
+        while i + 1 < lines.len() {
+            if lines[i].trim_start().starts_with('|')
+                && lines[i + 1].trim_start().starts_with('|')
+                && lines[i + 1].trim().trim_matches('|').split('|').all(|c| {
+                    let c = c.trim_matches(':').trim();
+                    c.len() >= 2 && c.chars().all(|ch| ch == '-')
+                })
+            {
+                let start = i;
+                let mut end = i + 2;
+                while end < lines.len() && lines[end].trim_start().starts_with('|') {
+                    end += 1;
+                }
+                found = Some((start, end));
+                break;
+            }
+            i += 1;
+        }
+        let Some((start, end)) = found else {
+            self.status = "No table found in this note".into();
+            return;
+        };
+        let parse = |line: &str| -> Vec<String> {
+            let t = line.trim();
+            let t = t.strip_prefix('|').unwrap_or(t);
+            let t = t.strip_suffix('|').unwrap_or(t);
+            t.split('|').map(|c| c.trim().to_string()).collect()
+        };
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        rows.push(parse(lines[start]));
+        for line in &lines[start + 2..end] {
+            rows.push(parse(line));
+        }
+        let cols = rows.iter().map(|r| r.len()).max().unwrap_or(1);
+        for r in &mut rows {
+            r.resize(cols, String::new());
+        }
+        self.table_rows = rows;
+        self.table_span = Some((start, end));
+        self.table_edit_open = true;
+    }
+
+    fn apply_table_edit(&mut self) {
+        let Some((start, end)) = self.table_span else {
+            return;
+        };
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            return;
+        };
+        let old = tab.text.clone();
+        let mut lines: Vec<String> = old.split('\n').map(String::from).collect();
+        let cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(1);
+        let mut rendered: Vec<String> = Vec::new();
+        for (r, row) in self.table_rows.iter().enumerate() {
+            let mut cells: Vec<String> = row.clone();
+            cells.resize(cols, String::new());
+            rendered.push(format!("| {} |", cells.join(" | ")));
+            if r == 0 {
+                rendered.push(format!(
+                    "|{}|",
+                    (0..cols).map(|_| " --- ").collect::<Vec<_>>().join("|")
+                ));
+            }
+        }
+        let end = end.min(lines.len());
+        let start = start.min(end);
+        lines.splice(start..end, rendered);
+        let new_text = lines.join("\n");
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(old);
+        tab.redo.clear();
+        tab.text = new_text;
+        self.table_edit_open = false;
+        self.rebuild_index();
+        self.status = "Table updated".into();
+    }
+
+    /// Insert a `^block-id` at the end of the current line and copy a
+    /// `[[note#^block-id]]` reference to the clipboard.
+    fn copy_block_reference(&mut self, ctx: &egui::Context) {
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            self.status = "Open a note first".into();
+            return;
+        };
+        let text = tab.text.clone();
+        // Prefer the editor caret's line; fall back to the live-preview line.
+        let caret_line = self
+            .current_selection(ctx)
+            .map(|(a, _)| text.chars().take(a).filter(|c| *c == '\n').count())
+            .unwrap_or(self.live_line);
+        let line = caret_line.min(text.lines().count().saturating_sub(1));
+        let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+        if lines.is_empty() {
+            return;
+        }
+        let id = format!("b{}", (line + 1) * 7919 + text.len() % 1000);
+        let trimmed = lines[line].trim_end().to_string();
+        // Reuse an existing block id on the line, if any.
+        let existing = trimmed
+            .split_whitespace()
+            .last()
+            .filter(|w| w.starts_with('^') && w.len() > 1)
+            .map(|w| w.trim_start_matches('^').to_string());
+        let final_id = existing.unwrap_or(id);
+        if !lines[line].trim_end().ends_with(&format!("^{final_id}")) {
+            lines[line] = format!("{} ^{final_id}", lines[line].trim_end());
+        }
+        let new_text = lines.join("\n");
+        let title = self.tabs[idx].title.clone();
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(text);
+        tab.redo.clear();
+        tab.text = new_text;
+        let reference = format!("[[{title}#^{final_id}]]");
+        self.pending_clipboard = Some(reference.clone());
+        self.status = format!("Copied {reference}");
+    }
+
+    // ----------------------------------------------------- properties / tags
+
+    fn open_property_editor(&mut self, key: Option<String>, value: Option<String>, is_list: bool) {
+        self.prop_edit_open = true;
+        self.prop_original = key.clone();
+        self.prop_key = key.unwrap_or_default();
+        self.prop_value = value.unwrap_or_default();
+        self.prop_is_list = is_list;
+        self.prop_error = None;
+    }
+
+    fn commit_property(&mut self) {
+        let key = self.prop_key.trim().to_string();
+        if key.is_empty() {
+            self.prop_error = Some("Enter a property name".into());
+            return;
+        }
+        if key.contains(':') || key.contains('\n') {
+            self.prop_error = Some("Property names cannot contain ':'".into());
+            return;
+        }
+        let value = if self.prop_is_list {
+            frontmatter::PropValue::List(
+                self.prop_value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            )
+        } else {
+            frontmatter::PropValue::Text(self.prop_value.trim().to_string())
+        };
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            self.prop_error = Some("Open a note first".into());
+            return;
+        };
+        let old = tab.text.clone();
+        let mut new_text = if let Some(orig) = &self.prop_original {
+            if !orig.eq_ignore_ascii_case(&key) {
+                frontmatter::remove_property(&old, orig)
+            } else {
+                old.clone()
+            }
+        } else {
+            old.clone()
+        };
+        new_text = frontmatter::set_property(&new_text, &key, value);
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(old);
+        tab.redo.clear();
+        tab.text = new_text;
+        tab.title = self
+            .titles
+            .get(&tab.path)
+            .cloned()
+            .unwrap_or_else(|| tab.title.clone());
+        self.prop_edit_open = false;
+        self.rebuild_index();
+        self.status = format!("Property '{key}' saved");
+    }
+
+    fn delete_property(&mut self) {
+        let Some(key) = self.prop_original.clone() else {
+            return;
+        };
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            return;
+        };
+        let old = tab.text.clone();
+        let new_text = frontmatter::remove_property(&old, &key);
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(old);
+        tab.redo.clear();
+        tab.text = new_text;
+        self.prop_edit_open = false;
+        self.rebuild_index();
+        self.status = format!("Property '{key}' removed");
+    }
+
+    /// Rename (or merge into an existing tag) / delete a tag in every note.
+    fn apply_tag_rename(&mut self, delete: bool) {
+        let from = self
+            .tag_rename_from
+            .trim()
+            .trim_start_matches('#')
+            .to_string();
+        let to = self
+            .tag_rename_to
+            .trim()
+            .trim_start_matches('#')
+            .to_string();
+        if from.is_empty() {
+            self.status = "Pick a tag to rename".into();
+            return;
+        }
+        if !delete && to.is_empty() {
+            self.status = "Enter a new tag name".into();
+            return;
+        }
+        let target = if delete { None } else { Some(to.as_str()) };
+        let paths: Vec<PathBuf> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.iter().map(|n| n.path.clone()).collect())
+            .unwrap_or_default();
+
+        // Apply to every note on disk.
+        for path in &paths {
+            if let Some(text) = self.read_note(path) {
+                let updated = frontmatter::rename_tag(&text, &from, target);
+                if updated != text {
+                    let _ = self.write_note(path, &updated);
+                }
+            }
+        }
+        // Apply to open buffers too (including unsaved edits).
+        for tab in self.tabs.iter_mut() {
+            tab.text = frontmatter::rename_tag(&tab.text, &from, target);
+        }
+        // Keep the sidebar filter meaningful.
+        if let Some(filter) = self.tag_filter.clone() {
+            if filter.eq_ignore_ascii_case(&from) {
+                self.tag_filter = if delete { None } else { Some(to.clone()) };
+            }
+        }
+        self.tag_manager_open = false;
+        self.rebuild_index();
+        self.status = if delete {
+            format!("Deleted tag '{from}' from every note")
+        } else {
+            format!("Renamed tag '{from}' → '{to}'")
+        };
+    }
+
     fn save_active(&mut self) {
         let idx = self.active;
         if idx >= self.tabs.len() || !self.tabs[idx].dirty() {
@@ -1100,6 +1824,12 @@ impl EncryptedNoteApp {
         self.tabs.remove(idx);
         if self.active >= self.tabs.len() && !self.tabs.is_empty() {
             self.active = self.tabs.len() - 1;
+        }
+        // Keep the second pane's index valid.
+        match self.secondary {
+            Some(sec) if sec == idx => self.secondary = None,
+            Some(sec) if sec > idx => self.secondary = Some(sec - 1),
+            _ => {}
         }
     }
 
@@ -1500,6 +2230,52 @@ impl EncryptedNoteApp {
                     };
                 }
             }
+            Command::ToggleWysiwyg => {
+                self.config.wysiwyg = !self.config.wysiwyg;
+                self.config.save();
+                self.status = if self.config.wysiwyg {
+                    "Concealed markdown (WYSIWYG) on".into()
+                } else {
+                    "Raw markdown on".into()
+                };
+            }
+            Command::ToggleSpellcheck => {
+                self.config.spellcheck = !self.config.spellcheck;
+                self.spell_cache = (0, HashSet::new());
+                self.config.save();
+                self.status = if self.config.spellcheck {
+                    if crate::spell::available() {
+                        "Spell check on".into()
+                    } else {
+                        "Spell check on — no system dictionary found".into()
+                    }
+                } else {
+                    "Spell check off".into()
+                };
+            }
+            Command::ToggleSplitPane => self.toggle_split_pane(),
+            Command::FindInNote => {
+                self.find_open = true;
+                self.find_focus = true;
+                self.find_query.clear();
+                self.find_match = 0;
+            }
+            Command::ColumnEdit => self.open_column_edit(ctx),
+            Command::Properties => {
+                self.prop_edit_open = true;
+                self.prop_original = None;
+                self.prop_key.clear();
+                self.prop_value.clear();
+                self.prop_is_list = false;
+                self.prop_error = None;
+            }
+            Command::TagManager => {
+                self.tag_manager_open = true;
+                self.tag_rename_from.clear();
+                self.tag_rename_to.clear();
+            }
+            Command::EditTable => self.open_table_editor(),
+            Command::CopyBlockRef => self.copy_block_reference(ctx),
             Command::TogglePanel => self.show_right = !self.show_right,
             Command::ToggleGraph => self.show_graph = !self.show_graph,
             Command::Lock => self.lock(),
@@ -1714,6 +2490,108 @@ impl EncryptedNoteApp {
         Vault::write_bytes(path, &crypto.encrypt(&json))
     }
 
+    /// Fetch a web card's title/description in the background (via curl).
+    fn request_web_meta(&mut self, url: &str) {
+        if self.canvas_web_cache.contains_key(url)
+            || self.canvas_web_pending.contains(url)
+            || self.canvas_web_rx.is_some()
+        {
+            return;
+        }
+        self.canvas_web_pending.insert(url.to_string());
+        let (tx, rx) = mpsc::channel();
+        self.canvas_web_rx = Some(rx);
+        let url = url.to_string();
+        std::thread::spawn(move || {
+            let out = std::process::Command::new("curl")
+                .args(["-sL", "--max-time", "8", &url])
+                .output();
+            let res = match out {
+                Ok(o) if o.status.success() => {
+                    let html = String::from_utf8_lossy(&o.stdout).to_string();
+                    let title = between(&html, "<title", "</title>")
+                        .map(|t| t.split('>').skip(1).collect::<String>())
+                        .unwrap_or_default();
+                    let desc = meta_content(&html, "description")
+                        .or_else(|| meta_content(&html, "og:description"))
+                        .unwrap_or_default();
+                    Ok((title.trim().to_string(), desc.trim().to_string()))
+                }
+                _ => Err("fetch failed".to_string()),
+            };
+            let _ = tx.send((url, res));
+        });
+    }
+
+    fn poll_canvas_web(&mut self) {
+        let Some(rx) = self.canvas_web_rx.as_ref() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok((url, Ok(meta))) => {
+                self.canvas_web_pending.remove(&url);
+                self.canvas_web_cache.insert(url, meta);
+                self.canvas_web_rx = None;
+            }
+            Ok((url, Err(_))) => {
+                self.canvas_web_pending.remove(&url);
+                self.canvas_web_cache
+                    .insert(url, (String::new(), String::new()));
+                self.canvas_web_rx = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.canvas_web_rx = None;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    /// First-page preview of a PDF card, rasterised once by `pdftoppm`.
+    fn canvas_pdf_texture(
+        &mut self,
+        ctx: &egui::Context,
+        path: &Path,
+    ) -> Option<egui::TextureHandle> {
+        use std::hash::{Hash, Hasher};
+        let cache = config::dir().join("pdf-cache");
+        let _ = std::fs::create_dir_all(&cache);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        path.to_string_lossy().hash(&mut h);
+        if let Ok(meta) = std::fs::metadata(path) {
+            meta.len().hash(&mut h);
+            if let Ok(m) = meta.modified() {
+                m.hash(&mut h);
+            }
+        }
+        let out = cache.join(format!("{:016x}.png", h.finish()));
+        if let Some(tex) = self.media_textures.get(&out) {
+            return Some(tex.clone());
+        }
+        if !out.exists() {
+            let key = out.to_string_lossy().to_string();
+            if self.canvas_pdf_pending.insert(key) {
+                let input = path.to_path_buf();
+                let prefix = out.to_string_lossy().trim_end_matches(".png").to_string();
+                std::thread::spawn(move || {
+                    let _ = std::process::Command::new("pdftoppm")
+                        .args(["-png", "-f", "1", "-singlefile", "-scale-to", "900"])
+                        .arg(&input)
+                        .arg(&prefix)
+                        .output();
+                });
+            }
+            return None;
+        }
+        let image = load_color_image(&out)?;
+        let tex = ctx.load_texture(
+            format!("pdf:{}", out.display()),
+            image,
+            egui::TextureOptions::LINEAR,
+        );
+        self.media_textures.insert(out, tex.clone());
+        Some(tex)
+    }
+
     fn canvas_ui(&mut self, ui: &mut egui::Ui) {
         let Some(mut view) = self.canvas.take() else {
             return;
@@ -1896,19 +2774,31 @@ impl EncryptedNoteApp {
                 bg_add = Some("link");
                 ui.close_menu();
             }
+            if ui.button("New PDF card…").clicked() {
+                bg_add = Some("pdf");
+                ui.close_menu();
+            }
         });
         if let (Some(kind), Some(pos)) = (bg_add, menu_pos) {
             view.snapshot();
             let w = to_world(pos);
-            let id = match kind {
-                "group" => view.data.add_group(w.x - 160.0, w.y - 110.0, 320.0, 220.0),
-                "link" => view
-                    .data
-                    .add_link_node("https://example.com", w.x - 120.0, w.y - 40.0),
-                _ => view.data.add_text_node(w.x - 120.0, w.y - 60.0),
-            };
-            view.sel.clear();
-            view.sel.insert(id);
+            if kind == "pdf" {
+                self.canvas_pdf_picker = Some(FilePicker::new(
+                    AttachKind::Pdf.start_dir(),
+                    AttachKind::Pdf,
+                ));
+            } else {
+                let id = match kind {
+                    "group" => view.data.add_group(w.x - 160.0, w.y - 110.0, 320.0, 220.0),
+                    "link" => {
+                        view.data
+                            .add_link_node("https://example.com", w.x - 120.0, w.y - 40.0)
+                    }
+                    _ => view.data.add_text_node(w.x - 120.0, w.y - 60.0),
+                };
+                view.sel.clear();
+                view.sel.insert(id);
+            }
         }
 
         // Rubber-band selection: left-drag on empty space.
@@ -2032,13 +2922,81 @@ impl EncryptedNoteApp {
                 "file" => node.file.clone().unwrap_or_default(),
                 _ => node.text.clone(),
             };
+            let fs = 13.0 * zoom.clamp(0.6, 1.6);
+            let mut body_top = nrect.shrink(6.0).min + egui::vec2(0.0, fs + 3.0);
+            // PDF file cards get a first-page preview.
+            let pdf_tex = if node.kind == "file" {
+                node.file.as_ref().and_then(|f| {
+                    if !f.to_ascii_lowercase().ends_with(".pdf") {
+                        return None;
+                    }
+                    let p = if Path::new(f).is_absolute() {
+                        PathBuf::from(f)
+                    } else {
+                        self.vault
+                            .as_ref()
+                            .map(|v| v.root.join(f))
+                            .unwrap_or_else(|| PathBuf::from(f))
+                    };
+                    self.canvas_pdf_texture(ui.ctx(), &p)
+                })
+            } else {
+                None
+            };
+            // Link cards show the fetched page title/description.
+            let web = if node.kind == "link" {
+                let url = node.file.clone().unwrap_or_else(|| node.text.clone());
+                self.request_web_meta(&url);
+                self.canvas_web_cache.get(&url).cloned()
+            } else {
+                None
+            };
             ui.painter().text(
                 nrect.shrink(6.0).min,
                 egui::Align2::LEFT_TOP,
                 ellipsize(&label, 400),
-                egui::FontId::proportional(13.0 * zoom.clamp(0.6, 1.6)),
+                egui::FontId::proportional(fs),
                 theme::TEXT,
             );
+            if let Some((title, desc)) = web {
+                if !title.is_empty() {
+                    ui.painter().text(
+                        body_top,
+                        egui::Align2::LEFT_TOP,
+                        ellipsize(&title, 120),
+                        egui::FontId::proportional(fs * 0.95),
+                        theme::TEXT,
+                    );
+                    body_top.y += fs + 2.0;
+                }
+                if !desc.is_empty() {
+                    ui.painter().text(
+                        body_top,
+                        egui::Align2::LEFT_TOP,
+                        ellipsize(&desc, 160),
+                        egui::FontId::proportional((fs * 0.82).max(8.0)),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+            }
+            if let Some(tex) = pdf_tex {
+                let avail = egui::Rect::from_min_max(body_top, nrect.shrink(6.0).max);
+                if avail.width() > 8.0 && avail.height() > 8.0 {
+                    let sz = tex.size_vec2();
+                    let aspect = if sz.x > 0.0 { sz.y / sz.x } else { 1.4 };
+                    let mut w = avail.width();
+                    let mut h = w * aspect;
+                    if h > avail.height() {
+                        h = avail.height();
+                        w = h / aspect;
+                    }
+                    let img = egui::Rect::from_min_size(avail.min, egui::vec2(w, h));
+                    egui::Image::new(egui::load::SizedTexture::from_handle(&tex))
+                        .fit_to_exact_size(egui::vec2(w, h))
+                        .rounding(egui::Rounding::same(3.0))
+                        .paint_at(ui, img);
+                }
+            }
             if resp.clicked() {
                 clicked = Some(id.clone());
             }
@@ -3117,8 +4075,8 @@ impl EncryptedNoteApp {
             return;
         }
         let mut shown = 0;
-        for rel in targets {
-            let Some(path) = vault_file(&root, &rel) else {
+        for media in targets {
+            let Some(path) = vault_file(&root, &media.path) else {
                 continue;
             };
             if !path.is_file() {
@@ -3130,7 +4088,7 @@ impl EncryptedNoteApp {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if is_image_ext(&ext) {
-                self.image_widget(ui, &path);
+                self.image_widget_sized(ui, &path, media.width, media.height);
                 shown += 1;
             } else if is_audio_ext(&ext) {
                 self.audio_widget(ui, &path);
@@ -3162,7 +4120,13 @@ impl EncryptedNoteApp {
 
     /// Draw an image inline. Drag the image to move it; drag the bottom-right
     /// handle to resize. The layout is remembered per attachment.
-    fn image_widget(&mut self, ui: &mut egui::Ui, path: &Path) {
+    fn image_widget_sized(
+        &mut self,
+        ui: &mut egui::Ui,
+        path: &Path,
+        explicit_w: Option<f32>,
+        explicit_h: Option<f32>,
+    ) {
         let key = path.to_string_lossy().to_string();
         let mut layout = self.media_layout.get(&key);
         let avail = ui.available_width().max(64.0);
@@ -3189,12 +4153,18 @@ impl EncryptedNoteApp {
         let aspect = if size.x > 0.0 { size.y / size.x } else { 0.75 };
         // Cap the default height so a tall image can't fill the whole viewport.
         let max_h = (ui.ctx().screen_rect().height() * 0.75).max(160.0);
-        let mut w = if layout.w <= 1.0 {
+        let mut w = if let Some(ew) = explicit_w {
+            ew.clamp(16.0, avail * 6.0)
+        } else if layout.w <= 1.0 {
             size.x.min(avail)
         } else {
             layout.w.clamp(48.0, avail * 4.0)
         };
-        let mut h = (w * aspect).max(24.0);
+        let mut h = if let Some(eh) = explicit_h {
+            eh.clamp(16.0, max_h)
+        } else {
+            (w * aspect).max(24.0)
+        };
         if h > max_h {
             w *= max_h / h;
             h = max_h;
@@ -5851,12 +6821,21 @@ impl EncryptedNoteApp {
                 let meta = metas.get(path);
                 let tags: &[String] = meta.map(|m| m.tags.as_slice()).unwrap_or(&[]);
                 let body = meta.map(|m| m.body.as_str()).unwrap_or("");
+                let props: Vec<(String, String)> = meta
+                    .map(|m| {
+                        m.props
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.display()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let path_str = path.to_string_lossy().to_string();
                 let doc = search::Doc {
                     title: &title,
                     path: &path_str,
                     tags,
                     content: body,
+                    props: &props,
                 };
                 if q.matches(&doc) {
                     let snippet = q.snippet(&doc).map(|(_, l)| l).unwrap_or_default();
@@ -6087,34 +7066,64 @@ impl EncryptedNoteApp {
                         ui.label(RichText::new(&title).strong().size(16.0));
                         ui.separator();
 
-                        // Tags (vault-wide)
+                        // Tags (vault-wide, hierarchical)
                         egui::CollapsingHeader::new("Tags")
                             .default_open(false)
                             .show(ui, |ui| {
-                                let tags = self.index.all_tags();
-                                if tags.is_empty() {
+                                if icons::button(
+                                    ui,
+                                    Icon::Edit,
+                                    13.0,
+                                    true,
+                                    false,
+                                    "Manage tags (rename / merge / delete)",
+                                )
+                                .clicked()
+                                {
+                                    self.tag_manager_open = true;
+                                    self.tag_rename_from.clear();
+                                    self.tag_rename_to.clear();
+                                }
+                                let tree = self.index.tag_tree();
+                                if tree.is_empty() {
                                     ui.weak("No tags yet");
                                 }
-                                for (tag, count) in tags {
-                                    let color = ui.visuals().hyperlink_color;
-                                    let clicked = ui
-                                        .horizontal(|ui| {
-                                            icons::icon(ui, Icon::Tag, 13.0, color);
-                                            ui.add(
-                                                egui::Button::new(
-                                                    RichText::new(format!("#{tag}  ({count})"))
-                                                        .color(color),
-                                                )
-                                                .frame(false),
-                                            )
-                                            .clicked()
-                                        })
-                                        .inner;
-                                    if clicked {
-                                        self.tag_filter = Some(tag.clone());
-                                        self.show_search_results = false;
-                                        self.search.clear();
-                                    }
+                                let mut clicked_tag: Option<String> = None;
+                                for node in &tree {
+                                    tag_tree_row(ui, node, 0, &mut clicked_tag);
+                                }
+                                if let Some(tag) = clicked_tag {
+                                    self.tag_filter = Some(tag);
+                                    self.show_search_results = false;
+                                    self.search.clear();
+                                }
+                            });
+
+                        // Properties (frontmatter)
+                        let props = frontmatter::properties(&text);
+                        egui::CollapsingHeader::new(format!("Properties ({})", props.len()))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                if props.is_empty() {
+                                    ui.weak("No frontmatter properties");
+                                }
+                                for (key, value) in &props {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{key}:")).small().strong());
+                                        ui.label(RichText::new(value.display()).small());
+                                    });
+                                }
+                                if icons::button(
+                                    ui,
+                                    Icon::Add,
+                                    13.0,
+                                    true,
+                                    false,
+                                    "Add / edit properties",
+                                )
+                                .clicked()
+                                {
+                                    self.open_property_editor(None, None, false);
                                 }
                             });
 
@@ -6252,6 +7261,103 @@ impl EncryptedNoteApp {
             });
     }
 
+    /// Find / replace bar for the active note (Ctrl+F).
+    fn find_bar_ui(&mut self, ui: &mut egui::Ui) {
+        let text = self
+            .tabs
+            .get(self.active)
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+        let count = Self::find_matches(&text, &self.find_query, self.find_case).len();
+        ui.horizontal(|ui| {
+            icons::icon(ui, Icon::Search, 14.0, theme::ACCENT);
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.find_query)
+                    .hint_text("Find in note")
+                    .desired_width(180.0)
+                    .id(egui::Id::new("find_query")),
+            );
+            if self.find_focus {
+                self.find_focus = false;
+                resp.request_focus();
+            }
+            if resp.changed() {
+                self.find_match = 0;
+            }
+            let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter {
+                let back = ui.input(|i| i.modifiers.shift);
+                self.find_next(!back);
+            }
+            if icons::button(
+                ui,
+                Icon::ArrowUp,
+                13.0,
+                true,
+                false,
+                "Previous match (Shift+Enter)",
+            )
+            .clicked()
+            {
+                self.find_next(false);
+            }
+            if icons::button(
+                ui,
+                Icon::ChevronDown,
+                13.0,
+                true,
+                false,
+                "Next match (Enter)",
+            )
+            .clicked()
+            {
+                self.find_next(true);
+            }
+            let cs = self.find_case;
+            if ui
+                .selectable_label(
+                    cs,
+                    RichText::new("Aa")
+                        .small()
+                        .color(if cs { theme::ACCENT } else { theme::TEXT }),
+                )
+                .on_hover_text("Match case")
+                .clicked()
+            {
+                self.find_case = !cs;
+                self.find_match = 0;
+                self.jump_to_match();
+            }
+            ui.label(
+                RichText::new(if count == 0 {
+                    "no matches".to_string()
+                } else {
+                    format!("{} / {count}", (self.find_match % count) + 1)
+                })
+                .small()
+                .weak(),
+            );
+            ui.separator();
+            ui.add(
+                egui::TextEdit::singleline(&mut self.find_replace)
+                    .hint_text("Replace with")
+                    .desired_width(160.0),
+            );
+            if ui.button("Replace").clicked() {
+                self.replace_current();
+            }
+            if ui.button("Replace all").clicked() {
+                self.replace_all();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if icons::button(ui, Icon::Close, 13.0, true, false, "Close find bar").clicked() {
+                    self.find_open = false;
+                }
+            });
+        });
+        ui.separator();
+    }
+
     fn central_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             // The password manager and RSS reader don't need an open vault.
@@ -6297,6 +7403,10 @@ impl EncryptedNoteApp {
 
             self.tab_strip(ui);
 
+            if self.find_open {
+                self.find_bar_ui(ui);
+            }
+
             // Attachment toolbar — above the editor, below the tabs.
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Attach:").small().weak());
@@ -6330,20 +7440,63 @@ impl EncryptedNoteApp {
                 return;
             }
             let view = self.tabs[idx].view;
+            let secondary = self.secondary.filter(|i| *i < self.tabs.len());
+
+            // A second note pane (Obsidian-style split view). Ctrl+click a tab
+            // to load that note into it.
+            if let Some(sec) = secondary {
+                egui::SidePanel::right("second_pane")
+                    .resizable(true)
+                    .default_width((ui.available_width() * 0.5).max(220.0))
+                    .show_inside(ui, |ui| {
+                        let title = self.tabs[sec].title.clone();
+                        let sec_view = self.tabs[sec].view;
+                        ui.horizontal(|ui| {
+                            icons::icon(ui, Icon::File, 13.0, ui.visuals().weak_text_color());
+                            ui.label(RichText::new(title).small().strong());
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if icons::button(
+                                        ui,
+                                        Icon::Close,
+                                        12.0,
+                                        true,
+                                        false,
+                                        "Close second pane",
+                                    )
+                                    .clicked()
+                                    {
+                                        self.secondary = None;
+                                    }
+                                },
+                            );
+                        });
+                        ui.separator();
+                        match sec_view {
+                            ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, sec, 1),
+                            ViewMode::Preview => self.preview_ui(ui, sec, 1),
+                            ViewMode::Live => self.live_ui(ui, sec, 1),
+                        }
+                    });
+            }
 
             if view == ViewMode::Split {
+                // When a separate second pane is open, keep this preview's
+                // scroll state distinct from it.
+                let target: u8 = if secondary.is_some() { 1 } else { 0 };
                 egui::SidePanel::right("preview_pane")
                     .resizable(true)
                     .default_width((ui.available_width() * 0.5).max(200.0))
                     .show_inside(ui, |ui| {
-                        self.preview_ui(ui, idx);
+                        self.preview_ui(ui, idx, target);
                     });
             }
 
             match view {
-                ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, idx),
-                ViewMode::Preview => self.preview_ui(ui, idx),
-                ViewMode::Live => self.live_ui(ui, idx),
+                ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, idx, 0),
+                ViewMode::Preview => self.preview_ui(ui, idx, 0),
+                ViewMode::Live => self.live_ui(ui, idx, 0),
             }
         });
     }
@@ -6364,8 +7517,16 @@ impl EncryptedNoteApp {
                 if dirty {
                     icons::icon(ui, Icon::Dot, 8.0, theme::ACCENT);
                 }
-                if ui.selectable_label(selected, title).clicked() {
-                    select = Some(i);
+                let label = ui.selectable_label(selected, title);
+                // Ctrl+click loads the tab into the second pane instead.
+                if label.clicked() {
+                    if ui.input(|inp| inp.modifiers.command) {
+                        self.secondary = Some(i);
+                        self.secondary_live_line = 0;
+                        self.status = "Loaded into second pane".into();
+                    } else {
+                        select = Some(i);
+                    }
                 }
                 if icons::button(ui, Icon::Close, 12.0, true, false, "Close tab").clicked() {
                     to_close = Some(i);
@@ -6427,6 +7588,78 @@ impl EncryptedNoteApp {
                     .hint_text("tag filter")
                     .desired_width(120.0),
             );
+            ui.menu_button("Colors", |ui| {
+                ui.label(RichText::new("Colour notes by tag").small().strong());
+                let groups = self.config.graph_color_groups.clone();
+                for (i, (tag, idx)) in groups.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let col = GROUP_COLORS[(*idx).min(GROUP_COLORS.len() - 1)];
+                        let (r, _) =
+                            ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().rect_filled(r, 2.0, col);
+                        ui.label(format!("#{tag}"));
+                        if ui.small_button("×").clicked() {
+                            self.config.graph_color_groups.remove(i);
+                            self.config.save();
+                        }
+                    });
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.graph_group_tag)
+                            .hint_text("tag")
+                            .desired_width(90.0),
+                    );
+                    for (i, col) in GROUP_COLORS.iter().enumerate() {
+                        if ui
+                            .add(
+                                egui::Button::new("  ")
+                                    .fill(*col)
+                                    .min_size(egui::vec2(16.0, 16.0)),
+                            )
+                            .clicked()
+                        {
+                            self.graph_group_color = i;
+                        }
+                    }
+                    if ui.button("Add").clicked() {
+                        let tag = self
+                            .graph_group_tag
+                            .trim()
+                            .trim_start_matches('#')
+                            .to_string();
+                        if !tag.is_empty() {
+                            self.config
+                                .graph_color_groups
+                                .push((tag, self.graph_group_color));
+                            self.graph_group_tag.clear();
+                            self.config.save();
+                        }
+                    }
+                });
+            });
+            ui.menu_button("Force", |ui| {
+                let mut changed = false;
+                ui.label(RichText::new("Repulsion").small());
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut self.config.graph_repulsion, 0.1..=3.0)
+                            .show_value(true),
+                    )
+                    .changed();
+                ui.label(RichText::new("Attraction").small());
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut self.config.graph_attraction, 0.1..=3.0)
+                            .show_value(true),
+                    )
+                    .changed();
+                if ui.button("Recompute layout").clicked() || changed {
+                    self.rebuild_graph();
+                    self.config.save();
+                }
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if icons::button(ui, Icon::Close, 16.0, true, false, "Close graph").clicked() {
                     self.show_graph = false;
@@ -6489,6 +7722,22 @@ impl EncryptedNoteApp {
         let visible: Vec<bool> = (0..n)
             .map(|i| local_mask[i] && tag_mask[i] && (self.graph_show_orphans || degree[i] > 0))
             .collect();
+        // Colour groups: first tag prefix that matches wins.
+        let groups = self.config.graph_color_groups.clone();
+        let node_colors: Vec<Option<Color32>> = nodes
+            .iter()
+            .map(|p| {
+                let tags = self.metas.get(p).map(|m| m.tags.as_slice()).unwrap_or(&[]);
+                groups.iter().find_map(|(tag, idx)| {
+                    let t = tag.to_ascii_lowercase();
+                    let hit = tags.iter().any(|nt| {
+                        let nt = nt.to_ascii_lowercase();
+                        nt == t || nt.starts_with(&format!("{t}/"))
+                    });
+                    hit.then(|| GROUP_COLORS[(*idx).min(GROUP_COLORS.len() - 1)])
+                })
+            })
+            .collect();
 
         // Pan / zoom navigation (like Obsidian's graph).
         let nav = ui.interact(
@@ -6526,6 +7775,17 @@ impl EncryptedNoteApp {
                     line.linear_multiply(if hot { 0.55 } else { 0.25 }),
                 );
                 painter.line_segment([pa, pb], stroke);
+                // Direction arrow at the target end.
+                let d = (pb - pa).normalized();
+                let perp = egui::vec2(-d.y, d.x);
+                let tip = pb;
+                let base = pb - d * 8.0;
+                let arrow_color = line.linear_multiply(if hot { 0.8 } else { 0.4 });
+                painter.add(egui::Shape::convex_polygon(
+                    vec![tip, base + perp * 3.5, base - perp * 3.5],
+                    arrow_color,
+                    egui::Stroke::NONE,
+                ));
             }
         }
 
@@ -6549,7 +7809,7 @@ impl EncryptedNoteApp {
             } else if resp.hovered() {
                 theme::TEXT
             } else {
-                weak
+                node_colors[i].unwrap_or(weak)
             };
             let title = self.title_of(path);
             // Labels only when zoomed in, hovered, or the active note — like
@@ -6579,23 +7839,63 @@ impl EncryptedNoteApp {
         }
     }
 
-    fn editor_ui(&mut self, ui: &mut egui::Ui, idx: usize) {
+    fn editor_ui(&mut self, ui: &mut egui::Ui, idx: usize, pane: u8) {
         if self.config.vim {
             self.vim_editor_ui(ui, idx);
             return;
         }
+        let size = self.config.font_size;
+        let concealed = self.config.wysiwyg;
+        let snapshot = self.tabs[idx].text.clone();
+        let miss = self.misspellings_for(&snapshot);
+        let id = egui::Id::new(("editor", idx, pane));
+        // Highlight find matches in the active pane while the find bar is open.
+        let highlights: Vec<(usize, usize)> = if pane == 0 && self.find_open {
+            Self::find_matches(&snapshot, &self.find_query, self.find_case)
+        } else {
+            Vec::new()
+        };
+
+        // Apply a pending find/replace selection before drawing the widget.
+        if pane == 0 {
+            if let Some((a, b)) = self.pending_select.take() {
+                let mut state =
+                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
+                state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(a),
+                        egui::text::CCursor::new(b),
+                    )));
+                state.store(ui.ctx(), id);
+                if !self.find_open {
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+            }
+        }
+
+        let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
+            let mut job = markdown::wysiwyg_job(text, size, concealed, &miss);
+            markdown::apply_highlights(&mut job, &highlights);
+            if wrap_width.is_finite() && wrap_width > 0.0 {
+                job.wrap.max_width = wrap_width;
+            }
+            ui.fonts(|f| f.layout_job(job))
+        };
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .id_source(("editor", idx))
+            .id_source(("editor_scroll", idx, pane))
             .show(ui, |ui| {
                 let tab = &mut self.tabs[idx];
                 let before = tab.text.clone();
                 let resp = ui.add(
                     egui::TextEdit::multiline(&mut tab.text)
-                        .font(egui::TextStyle::Monospace)
+                        .id(id)
                         .desired_width(f32::INFINITY)
                         .desired_rows(30)
-                        .lock_focus(true),
+                        .lock_focus(true)
+                        .layouter(&mut layouter),
                 );
                 if resp.changed() && tab.text != before {
                     tab.undo.push(before);
@@ -6752,16 +8052,24 @@ impl EncryptedNoteApp {
         ui.weak(self.vim.status());
     }
 
-    fn preview_ui(&mut self, ui: &mut egui::Ui, idx: usize) {
+    fn preview_ui(&mut self, ui: &mut egui::Ui, idx: usize, pane: u8) {
         let raw = self.tabs[idx].text.clone();
         // Hide any frontmatter block from the rendered preview.
         let body = frontmatter::parse(&raw).body;
         let size = self.config.font_size;
+        let docs = self.query_docs();
+        let fence = move |ui: &mut egui::Ui, lang: &str, code: &str| -> bool {
+            if lang.eq_ignore_ascii_case("query") || lang.eq_ignore_ascii_case("dataview") {
+                query::render(ui, code, &docs)
+            } else {
+                render_special_fence(ui, lang, code)
+            }
+        };
         let mut wiki: Vec<String> = Vec::new();
         let mut external: Vec<String> = Vec::new();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .id_source(("preview", idx))
+            .id_source(("preview", idx, pane))
             .show(ui, |ui| {
                 // Attached images / audio / video scroll with the note.
                 self.media_strip(ui, &body);
@@ -6771,11 +8079,11 @@ impl EncryptedNoteApp {
                     let text = this.read_note(&path)?;
                     let meta = frontmatter::parse(&text);
                     let title = meta.title.unwrap_or_else(|| this.title_of(&path));
-                    Some((title, meta.body))
+                    let body = extract_reference(&meta.body, target);
+                    Some((title, body))
                 };
                 ui.add_space(4.0);
-                let clicked =
-                    markdown::render(ui, &body, size, &resolver, &render_special_fence, 0);
+                let clicked = markdown::render(ui, &body, size, &resolver, &fence, 0);
                 for c in clicked {
                     match c {
                         markdown::LinkClick::Wiki(t) => wiki.push(t),
@@ -6798,21 +8106,51 @@ impl EncryptedNoteApp {
     /// Live Preview: the note is rendered as markdown, but the active line is
     /// inline-editable. Up/Down (while editing) move the active line; Enter
     /// splits it; Backspace at the start of a line joins it with the previous.
-    fn live_ui(&mut self, ui: &mut egui::Ui, idx: usize) {
+    fn live_ui(&mut self, ui: &mut egui::Ui, idx: usize, pane: u8) {
+        let active_line = if pane == 0 {
+            self.live_line
+        } else {
+            self.secondary_live_line
+        };
+        if let Some(next) = self.live_ui_at(ui, idx, pane, active_line) {
+            if pane == 0 {
+                self.live_line = next;
+            } else {
+                self.secondary_live_line = next;
+            }
+        }
+    }
+
+    fn live_ui_at(
+        &mut self,
+        ui: &mut egui::Ui,
+        idx: usize,
+        pane: u8,
+        active_line: usize,
+    ) -> Option<usize> {
         let size = self.config.font_size;
+        let concealed = self.config.wysiwyg;
         let raw = self.tabs[idx].text.clone();
+        let miss = self.misspellings_for(&raw);
         let lines: Vec<String> = raw.split('\n').map(String::from).collect();
-        let active = self.live_line.min(lines.len().saturating_sub(1));
+        let active = active_line.min(lines.len().saturating_sub(1));
 
         let no_embed = |_t: &str| -> Option<(String, String)> { None };
-        let no_fence = |_ui: &mut egui::Ui, _l: &str, _c: &str| -> bool { false };
+        let docs = self.query_docs();
+        let fence = move |ui: &mut egui::Ui, lang: &str, code: &str| -> bool {
+            if lang.eq_ignore_ascii_case("query") || lang.eq_ignore_ascii_case("dataview") {
+                query::render(ui, code, &docs)
+            } else {
+                render_special_fence(ui, lang, code)
+            }
+        };
 
         let mut new_text: Option<String> = None;
         let mut new_active: Option<usize> = None;
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .id_source(("live", idx))
+            .id_source(("live", idx, pane))
             .show(ui, |ui| {
                 self.media_strip(ui, &raw);
                 ui.add_space(4.0);
@@ -6821,14 +8159,22 @@ impl EncryptedNoteApp {
                     if i == active {
                         if !buffer.is_empty() {
                             let md = buffer.join("\n");
-                            markdown::render(ui, &md, size, &no_embed, &no_fence, 0);
+                            markdown::render(ui, &md, size, &no_embed, &fence, 0);
                             buffer.clear();
                         }
                         let mut tmp = line.clone();
+                        let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
+                            let mut job = markdown::wysiwyg_job(text, size, concealed, &miss);
+                            if wrap_width.is_finite() && wrap_width > 0.0 {
+                                job.wrap.max_width = wrap_width;
+                            }
+                            ui.fonts(|f| f.layout_job(job))
+                        };
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut tmp)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY),
+                                .id(egui::Id::new(("live_line", idx, pane)))
+                                .desired_width(f32::INFINITY)
+                                .layouter(&mut layouter),
                         );
                         if resp.changed() {
                             let mut ls = lines.clone();
@@ -6867,16 +8213,14 @@ impl EncryptedNoteApp {
                 }
                 if !buffer.is_empty() {
                     let md = buffer.join("\n");
-                    markdown::render(ui, &md, size, &no_embed, &no_fence, 0);
+                    markdown::render(ui, &md, size, &no_embed, &fence, 0);
                 }
             });
 
         if let Some(t) = new_text {
             self.tabs[idx].text = t;
         }
-        if let Some(a) = new_active {
-            self.live_line = a;
-        }
+        new_active
     }
 
     fn welcome_ui(&mut self, ui: &mut egui::Ui) {
@@ -6914,7 +8258,385 @@ impl EncryptedNoteApp {
         });
     }
 
+    /// Properties (frontmatter) panel: list the note's YAML keys, add/edit/delete
+    /// any of them, not just the built-in title/aliases/tags.
+    fn properties_dialog(&mut self, ctx: &egui::Context) {
+        if !self.prop_edit_open {
+            return;
+        }
+        let text = self
+            .tabs
+            .get(self.active)
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+        let props = frontmatter::properties(&text);
+        let mut open = true;
+        let mut edit: Option<(String, String, bool)> = None;
+        let mut del: Option<String> = None;
+        egui::Window::new("Properties")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("YAML frontmatter properties for this note")
+                        .small()
+                        .weak(),
+                );
+                ui.separator();
+                if props.is_empty() {
+                    ui.weak("No properties yet — add one below.");
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (key, value) in &props {
+                            let is_list = matches!(value, frontmatter::PropValue::List(_));
+                            let shown = value.display();
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(key).strong().small());
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}{}",
+                                        if is_list { "[ " } else { "" },
+                                        shown
+                                    ))
+                                    .small()
+                                    .weak(),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if icons::button(
+                                            ui,
+                                            Icon::Trash,
+                                            13.0,
+                                            true,
+                                            false,
+                                            "Delete property",
+                                        )
+                                        .clicked()
+                                        {
+                                            del = Some(key.clone());
+                                        }
+                                        if icons::button(
+                                            ui,
+                                            Icon::Edit,
+                                            13.0,
+                                            true,
+                                            false,
+                                            "Edit property",
+                                        )
+                                        .clicked()
+                                        {
+                                            edit = Some((key.clone(), shown.clone(), is_list));
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
+                ui.separator();
+                ui.label(RichText::new("Add / update a property").small().strong());
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.prop_key)
+                            .hint_text("key")
+                            .desired_width(130.0),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.prop_value)
+                            .hint_text("value")
+                            .desired_width(170.0),
+                    );
+                    ui.checkbox(&mut self.prop_is_list, "List (comma-separated)");
+                });
+                if let Some(err) = &self.prop_error {
+                    ui.label(RichText::new(err).color(theme::DANGER).small());
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Save property").clicked() {
+                        self.commit_property();
+                    }
+                    if self.prop_original.is_some() && ui.button("Delete").clicked() {
+                        del = self.prop_original.clone();
+                    }
+                });
+            });
+        if let Some((key, value, is_list)) = edit {
+            self.open_property_editor(Some(key), Some(value), is_list);
+        }
+        if let Some(key) = del {
+            self.prop_original = Some(key);
+            self.delete_property();
+        }
+        if !open {
+            self.prop_edit_open = false;
+        }
+    }
+
+    /// Tag manager: rename, merge or delete a tag across every note.
+    fn tag_manager_dialog(&mut self, ctx: &egui::Context) {
+        if !self.tag_manager_open {
+            return;
+        }
+        let tags = self.index.all_tags();
+        let mut open = true;
+        egui::Window::new("Manage tags")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(430.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Renaming rewrites the tag in every note (frontmatter and inline).",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        if tags.is_empty() {
+                            ui.weak("No tags in this vault");
+                        }
+                        for (tag, count) in &tags {
+                            ui.horizontal(|ui| {
+                                icons::icon(ui, Icon::Tag, 12.0, theme::ACCENT);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new(format!("#{tag}  ({count})")).small(),
+                                        )
+                                        .frame(false),
+                                    )
+                                    .clicked()
+                                {
+                                    self.tag_rename_from = tag.clone();
+                                    self.tag_rename_to = tag.clone();
+                                }
+                            });
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("Rename");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.tag_rename_from)
+                            .hint_text("old tag")
+                            .desired_width(120.0),
+                    );
+                    ui.label("→");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.tag_rename_to)
+                            .hint_text("new tag")
+                            .desired_width(120.0),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Rename tag").clicked() {
+                        self.apply_tag_rename(false);
+                    }
+                    if ui
+                        .add(egui::Button::new(
+                            RichText::new("Delete tag").color(theme::DANGER),
+                        ))
+                        .clicked()
+                    {
+                        self.apply_tag_rename(true);
+                    }
+                });
+            });
+        if !open {
+            self.tag_manager_open = false;
+        }
+    }
+
+    /// Column edit / multi-cursor insert: add text at a column on a line range.
+    fn column_edit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.column_edit_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Column edit")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(400.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Insert the same text on every line in a range (multi-cursor workhorse).",
+                    )
+                    .small()
+                    .weak(),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("From line");
+                    ui.add(egui::DragValue::new(&mut self.column_start).clamp_range(1..=1_000_000));
+                    ui.label("to");
+                    ui.add(egui::DragValue::new(&mut self.column_end).clamp_range(1..=1_000_000));
+                });
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.column_mode, 0, "At column");
+                    ui.add(
+                        egui::DragValue::new(&mut self.column_index)
+                            .clamp_range(0..=100_000)
+                            .prefix("col "),
+                    );
+                    ui.radio_value(&mut self.column_mode, 1, "At end of line");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Text");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.column_text)
+                            .desired_width(220.0)
+                            .hint_text("text to insert"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        self.apply_column_edit();
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.column_edit_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.column_edit_open = false;
+        }
+    }
+
+    /// Visual table editor: edit cells in a grid, add/remove rows and columns,
+    /// then write the table back into the note.
+    fn table_editor_dialog(&mut self, ctx: &egui::Context) {
+        if !self.table_edit_open {
+            return;
+        }
+        let mut open = true;
+        let mut add_row = false;
+        let mut add_col = false;
+        let mut del_row: Option<usize> = None;
+        let mut del_col: Option<usize> = None;
+        let mut save = false;
+        egui::Window::new("Edit table")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(620.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new("First row is the header. Edit cells directly.")
+                        .small()
+                        .weak(),
+                );
+                ui.separator();
+                let mut rows = std::mem::take(&mut self.table_rows);
+                if rows.is_empty() {
+                    rows.push(vec![String::new()]);
+                }
+                let cols = rows.iter().map(|r| r.len()).max().unwrap_or(1);
+                for r in &mut rows {
+                    r.resize(cols, String::new());
+                }
+                egui::ScrollArea::both().max_height(320.0).show(ui, |ui| {
+                    egui::Grid::new("table-edit-grid")
+                        .striped(true)
+                        .spacing([6.0, 4.0])
+                        .show(ui, |ui| {
+                            for (r, row) in rows.iter_mut().enumerate() {
+                                for (c, cell) in row.iter_mut().enumerate() {
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(cell)
+                                            .id_source(("tcell", r, c))
+                                            .desired_width(110.0),
+                                    );
+                                    if r == 0 {
+                                        let _ = resp;
+                                    }
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+                self.table_rows = rows;
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("+ Row").clicked() {
+                        add_row = true;
+                    }
+                    if ui.button("+ Column").clicked() {
+                        add_col = true;
+                    }
+                    ui.separator();
+                    let rows_len = self.table_rows.len();
+                    ui.label("Delete row:");
+                    for r in 0..rows_len.min(20) {
+                        if ui.small_button(format!("{}", r + 1)).clicked() {
+                            del_row = Some(r);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    let cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(1);
+                    ui.label("Delete column:");
+                    for c in 0..cols.min(20) {
+                        if ui.small_button(format!("{}", c + 1)).clicked() {
+                            del_col = Some(c);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Save table").clicked() {
+                        save = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.table_edit_open = false;
+                    }
+                });
+            });
+        if add_row {
+            let cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(1);
+            self.table_rows.push(vec![String::new(); cols]);
+        }
+        if add_col {
+            for row in &mut self.table_rows {
+                row.push(String::new());
+            }
+        }
+        if let Some(r) = del_row {
+            if self.table_rows.len() > 1 {
+                self.table_rows.remove(r);
+            }
+        }
+        if let Some(c) = del_col {
+            for row in &mut self.table_rows {
+                if c < row.len() && row.len() > 1 {
+                    row.remove(c);
+                }
+            }
+        }
+        if save {
+            self.apply_table_edit();
+        }
+        if !open {
+            self.table_edit_open = false;
+        }
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.table_editor_dialog(ctx);
+        self.properties_dialog(ctx);
+        self.tag_manager_dialog(ctx);
+        self.column_edit_dialog(ctx);
+
         // Directory picker.
         if self.picker.is_some() {
             let mut open = true;
@@ -7323,6 +9045,12 @@ impl EncryptedNoteApp {
         }
 
         // Attachment file chooser.
+        if self.attach_picker.is_none() {
+            if let Some(p) = self.canvas_pdf_picker.take() {
+                self.attach_picker = Some(p);
+                self.canvas_pdf_mode = true;
+            }
+        }
         if self.attach_picker.is_some() {
             let mut chosen: Option<PathBuf> = None;
             let mut close = false;
@@ -7420,10 +9148,27 @@ impl EncryptedNoteApp {
                     });
             }
             if let Some(p) = chosen {
-                self.attach_file(&p);
+                if self.canvas_pdf_mode {
+                    self.canvas_pdf_mode = false;
+                    if let Some(view) = self.canvas.as_mut() {
+                        let last = view.data.nodes.len() as f32;
+                        view.snapshot();
+                        let id = view.data.add_file_node(
+                            &p.to_string_lossy(),
+                            40.0 + last * 24.0,
+                            40.0 + last * 24.0,
+                        );
+                        view.sel.clear();
+                        view.sel.insert(id);
+                        self.status = format!("Added PDF card · {}", p.display());
+                    }
+                } else {
+                    self.attach_file(&p);
+                }
                 self.attach_picker = None;
             } else if close {
                 self.attach_picker = None;
+                self.canvas_pdf_mode = false;
             }
         }
 
@@ -7520,9 +9265,22 @@ impl EncryptedNoteApp {
             self.new_note_error = None;
             self.new_note_name.clear();
         }
-        if ctx.input_mut(|i| i.consume_shortcut(&find)) {
+        // Ctrl+F is find/replace *in the current note* (Obsidian behaviour);
+        // Ctrl+Shift+F searches across the vault.
+        let find_global =
+            egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::F);
+        if ctx.input_mut(|i| i.consume_shortcut(&find_global)) {
             self.focus_search = true;
             self.show_search_results = true;
+        } else if ctx.input_mut(|i| i.consume_shortcut(&find)) {
+            self.find_open = true;
+            self.find_focus = true;
+            self.find_match = 0;
+        }
+        let replace = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::H);
+        if ctx.input_mut(|i| i.consume_shortcut(&replace)) {
+            self.find_open = true;
+            self.find_focus = true;
         }
         if ctx.input_mut(|i| i.consume_shortcut(&open)) {
             self.open_picker();
@@ -7637,6 +9395,9 @@ impl eframe::App for EncryptedNoteApp {
         }
 
         self.handle_shortcuts(ctx);
+        if let Some(text) = self.pending_clipboard.take() {
+            ctx.copy_text(text);
+        }
 
         // Autosave dirty notes every few seconds.
         let now = ctx.input(|i| i.time);
@@ -7658,6 +9419,10 @@ impl eframe::App for EncryptedNoteApp {
 
         // Poll background feed work.
         self.poll_feeds();
+        self.poll_canvas_web();
+        if !self.canvas_web_pending.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        }
         self.poll_full_article();
         self.tick_favicon(ctx);
 
@@ -7691,6 +9456,58 @@ impl eframe::App for EncryptedNoteApp {
         }
         self.config.save();
     }
+}
+
+/// One row of the hierarchical tag panel: a collapsible node with its count.
+fn tag_tree_row(
+    ui: &mut egui::Ui,
+    node: &index::TagNode,
+    depth: usize,
+    clicked: &mut Option<String>,
+) {
+    let color = ui.visuals().hyperlink_color;
+    ui.horizontal(|ui| {
+        ui.add_space(depth as f32 * 12.0);
+        if node.children.is_empty() {
+            icons::icon(ui, Icon::Tag, 12.0, color);
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new(format!("{}  ({})", node.name, node.count))
+                            .small()
+                            .color(color),
+                    )
+                    .frame(false),
+                )
+                .clicked()
+            {
+                *clicked = Some(node.full.clone());
+            }
+        } else {
+            egui::CollapsingHeader::new(
+                RichText::new(format!("{}  ({})", node.name, node.count)).small(),
+            )
+            .id_source(("tagtree", &node.full))
+            .show(ui, |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(format!("#{} — all {}", node.full, node.count))
+                                .small()
+                                .color(color),
+                        )
+                        .frame(false),
+                    )
+                    .clicked()
+                {
+                    *clicked = Some(node.full.clone());
+                }
+                for child in &node.children {
+                    tag_tree_row(ui, child, depth + 1, clicked);
+                }
+            });
+        }
+    });
 }
 
 /// Actions collected while drawing the tree, applied by the caller afterwards.
@@ -7962,8 +9779,45 @@ fn url_domain(url: &str) -> String {
 }
 
 /// Local file targets (`assets/…`) referenced by markdown media links.
-fn media_links(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
+/// A media reference found in a note, with an optional explicit size.
+#[derive(Clone, Debug, PartialEq)]
+struct MediaRef {
+    path: String,
+    width: Option<f32>,
+    height: Option<f32>,
+}
+
+fn parse_size(spec: &str) -> (Option<f32>, Option<f32>) {
+    let spec = spec.trim();
+    if let Some((w, h)) = spec.split_once('x') {
+        (w.trim().parse().ok(), h.trim().parse().ok())
+    } else {
+        (spec.parse().ok(), None)
+    }
+}
+
+fn media_links(text: &str) -> Vec<MediaRef> {
+    let mut out: Vec<MediaRef> = Vec::new();
+    let mut push = |path: String, w: Option<f32>, h: Option<f32>| {
+        if out.iter().any(|m| m.path == path) {
+            return;
+        }
+        let ext = Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !path.starts_with("http")
+            && (is_image_ext(&ext) || is_audio_ext(&ext) || is_video_ext(&ext))
+        {
+            out.push(MediaRef {
+                path,
+                width: w,
+                height: h,
+            });
+        }
+    };
+    // Markdown images/links: ![alt](path) / [text](path)
     let bytes = text.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {
@@ -7971,22 +9825,26 @@ fn media_links(text: &str) -> Vec<String> {
             let start = i + 2;
             if let Some(end_rel) = text[start..].find(')') {
                 let url = text[start..start + end_rel].trim().to_string();
-                let ext = Path::new(&url)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if !url.starts_with("http")
-                    && (is_image_ext(&ext) || is_audio_ext(&ext) || is_video_ext(&ext))
-                    && !out.contains(&url)
-                {
-                    out.push(url);
-                }
+                push(url, None, None);
                 i = start + end_rel + 1;
                 continue;
             }
         }
         i += 1;
+    }
+    // Obsidian embeds: ![[path|300]] or ![[path|300x200]]
+    let mut rest = text;
+    while let Some(start) = rest.find("![[") {
+        if let Some(end) = rest[start + 3..].find("]]") {
+            let inner = &rest[start + 3..start + 3 + end];
+            let mut parts = inner.split('|');
+            let path = parts.next().unwrap_or("").trim().to_string();
+            let (w, h) = parts.next().map(parse_size).unwrap_or((None, None));
+            push(path, w, h);
+            rest = &rest[start + 3 + end + 2..];
+        } else {
+            break;
+        }
     }
     out
 }
@@ -8072,6 +9930,86 @@ fn inactive_bar(ui: &mut egui::Ui) {
 
 /// Resolve a vault-relative media path, refusing anything that escapes the
 /// vault (absolute paths, `..` components, or symlinks pointing outside).
+/// Extract the referenced part of a note body: a `#^block` block or a
+/// `#Heading` section. Falls back to the whole body.
+/// Text between two markers (inclusive start marker).
+fn between(hay: &str, start: &str, end: &str) -> Option<String> {
+    let a = hay.find(start)?;
+    let rest = &hay[a..];
+    let b = rest.find(end)?;
+    Some(rest[..b].to_string())
+}
+
+/// Read a `<meta name="..." content="...">` value, either attribute order.
+fn meta_content(html: &str, name: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let key = format!("name=\"{name}\"");
+    let key2 = format!("property=\"{name}\"");
+    for needle in [key, key2] {
+        if let Some(pos) = lower.find(&needle) {
+            let slice = &html[pos..(pos + 600).min(html.len())];
+            if let Some(cpos) = slice.to_ascii_lowercase().find("content=\"") {
+                let rest = &slice[cpos + 9..];
+                if let Some(end) = rest.find('\"') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_reference(body: &str, target: &str) -> String {
+    let Some((_, anchor)) = target.split_once('#') else {
+        return body.to_string();
+    };
+    let anchor = anchor.trim();
+    let lines: Vec<&str> = body.lines().collect();
+    if let Some(id) = anchor.strip_prefix('^') {
+        let id = id.trim();
+        if let Some(idx) = lines.iter().position(|l| {
+            l.split_whitespace()
+                .any(|tok| tok.trim() == format!("^{id}"))
+        }) {
+            // Return the surrounding paragraph (until blank lines).
+            let mut start = idx;
+            while start > 0 && !lines[start - 1].trim().is_empty() {
+                start -= 1;
+            }
+            let mut end = idx;
+            while end + 1 < lines.len() && !lines[end + 1].trim().is_empty() {
+                end += 1;
+            }
+            return lines[start..=end].join("\n");
+        }
+        return body.to_string();
+    }
+    let needle = anchor.to_lowercase();
+    let is_heading = |l: &str| l.trim_start().starts_with('#');
+    let level = |l: &str| l.chars().take_while(|c| *c == '#').count();
+    let mut start = None;
+    for (i, l) in lines.iter().enumerate() {
+        if is_heading(l) {
+            let text = l.trim_start().trim_start_matches('#').trim().to_lowercase();
+            if text.contains(&needle) {
+                start = Some((i, level(l.trim_start())));
+                break;
+            }
+        }
+    }
+    let Some((s, lv)) = start else {
+        return body.to_string();
+    };
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(s + 1) {
+        if is_heading(l) && level(l.trim_start()) <= lv {
+            end = i;
+            break;
+        }
+    }
+    lines[s..end].join("\n")
+}
+
 fn vault_file(root: &Path, rel: &str) -> Option<PathBuf> {
     let rel = rel.trim();
     if rel.is_empty() {

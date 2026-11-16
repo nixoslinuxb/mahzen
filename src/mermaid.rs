@@ -286,8 +286,21 @@ fn shape_rect(ui: &egui::Ui, shape: Shape, center: egui::Pos2, size: Vec2) -> eg
     egui::Rect::from_center_size(center, size)
 }
 
-/// Render a Mermaid flowchart. Returns `true` if the source was handled.
+/// Render a Mermaid diagram (flowchart, sequence diagram or pie chart).
+/// Returns `true` if the source was handled natively.
 pub fn render(ui: &mut egui::Ui, src: &str) -> bool {
+    let first = src
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with("%%"))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if first.starts_with("sequencediagram") {
+        return render_sequence(ui, src);
+    }
+    if first.starts_with("pie") {
+        return render_pie(ui, src);
+    }
     let Some(fc) = parse(src) else {
         return false;
     };
@@ -436,6 +449,270 @@ pub fn render(ui: &mut egui::Ui, src: &str) -> bool {
         .weak()
         .small(),
     );
+    true
+}
+
+// ------------------------------------------------------------ sequence diagram
+
+struct Participant {
+    id: String,
+    label: String,
+}
+
+struct Message {
+    from: usize,
+    to: usize,
+    text: String,
+    dashed: bool,
+}
+
+/// Parse the subset of `sequenceDiagram` used day-to-day.
+fn parse_sequence(src: &str) -> Option<(Vec<Participant>, Vec<Message>, Option<String>)> {
+    let mut parts: Vec<Participant> = Vec::new();
+    let mut msgs: Vec<Message> = Vec::new();
+    let mut note: Option<String> = None;
+    let ensure = |id: &str, parts: &mut Vec<Participant>| -> usize {
+        if let Some(i) = parts.iter().position(|p| p.id == id) {
+            return i;
+        }
+        parts.push(Participant {
+            id: id.to_string(),
+            label: id.to_string(),
+        });
+        parts.len() - 1
+    };
+    let mut seen_header = false;
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.to_ascii_lowercase().starts_with("sequencediagram") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("participant ") {
+            let (id, label) = match rest.split_once(" as ") {
+                Some((a, b)) => (a.trim(), b.trim()),
+                None => (rest.trim(), rest.trim()),
+            };
+            let i = ensure(id, &mut parts);
+            parts[i].label = label.to_string();
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Note ") {
+            note = Some(rest.to_string());
+            continue;
+        }
+        // Messages: A->>B: text, A-->>B: text, A->B: text, A-->B: text
+        if let Some((from_id, body)) = split_arrow(line) {
+            let (text, to_id) = match body.split_once(':') {
+                Some((to, t)) => (t.trim().to_string(), to.trim().to_string()),
+                None => (String::new(), body.trim().to_string()),
+            };
+            let a = ensure(&from_id, &mut parts);
+            let b = ensure(&to_id, &mut parts);
+            msgs.push(Message {
+                from: a,
+                to: b,
+                text,
+                dashed: line.contains("--"),
+            });
+        }
+    }
+    if !seen_header || parts.is_empty() {
+        return None;
+    }
+    Some((parts, msgs, note))
+}
+
+/// Split `A->>B: hello` into `("A", "B: hello")`.
+fn split_arrow(line: &str) -> Option<(String, String)> {
+    for pat in ["->>", "-->>", "-->", "->"] {
+        if let Some((a, b)) = line.split_once(pat) {
+            return Some((a.trim().to_string(), b.trim().to_string()));
+        }
+    }
+    None
+}
+
+fn render_sequence(ui: &mut egui::Ui, src: &str) -> bool {
+    let Some((parts, msgs, _note)) = parse_sequence(src) else {
+        return false;
+    };
+    let col_w = 190.0f32;
+    let left = 30.0;
+    let top = 20.0;
+    let header_h = 34.0;
+    let line_h = 40.0;
+    let width = left * 2.0 + col_w * parts.len() as f32;
+    let height = top + header_h + line_h * (msgs.len().max(1) as f32) + 30.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let origin = rect.min;
+    let accent = ui.visuals().hyperlink_color;
+    let fill = ui.visuals().faint_bg_color;
+    let text = ui.visuals().text_color();
+    let cx = |i: usize| origin.x + left + col_w * (i as f32 + 0.5);
+
+    // Participants + lifelines.
+    for (i, p) in parts.iter().enumerate() {
+        let r = egui::Rect::from_center_size(
+            egui::pos2(cx(i), origin.y + top + header_h / 2.0),
+            Vec2::new(col_w * 0.8, header_h),
+        );
+        painter.rect(
+            r,
+            egui::Rounding::same(4.0),
+            fill,
+            egui::Stroke::new(1.2_f32, accent),
+        );
+        painter.text(
+            r.center(),
+            egui::Align2::CENTER_CENTER,
+            &p.label,
+            egui::FontId::proportional(13.0),
+            text,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(cx(i), origin.y + top + header_h),
+                egui::pos2(cx(i), origin.y + height - 12.0),
+            ],
+            egui::Stroke::new(1.0_f32, accent.linear_multiply(0.35)),
+        );
+    }
+    // Messages.
+    for (n, m) in msgs.iter().enumerate() {
+        let y = origin.y + top + header_h + line_h * (n as f32 + 0.5);
+        let x1 = cx(m.from);
+        let x2 = cx(m.to);
+        let stroke = egui::Stroke::new(1.4_f32, accent);
+        if m.dashed {
+            draw_dashed(&painter, egui::pos2(x1, y), egui::pos2(x2, y), stroke);
+        } else {
+            painter.line_segment([egui::pos2(x1, y), egui::pos2(x2, y)], stroke);
+        }
+        let dir = if x2 >= x1 { 1.0 } else { -1.0 };
+        let tip = egui::pos2(x2, y);
+        let base = egui::pos2(x2 - dir * 10.0, y);
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip, base + Vec2::new(0.0, -5.0), base + Vec2::new(0.0, 5.0)],
+            accent,
+            egui::Stroke::NONE,
+        ));
+        if !m.text.is_empty() {
+            painter.text(
+                egui::pos2((x1 + x2) / 2.0, y - 9.0),
+                egui::Align2::CENTER_BOTTOM,
+                &m.text,
+                egui::FontId::proportional(12.0),
+                text,
+            );
+        }
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new("mermaid · sequence diagram").weak().small());
+    true
+}
+
+// ---------------------------------------------------------------- pie chart
+
+fn render_pie(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut title = String::new();
+    let mut slices: Vec<(String, f64)> = Vec::new();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("pie") {
+            if let Some(t) = line.split_once("title").map(|(_, t)| t.trim()) {
+                title = t.to_string();
+            }
+            continue;
+        }
+        if let Some((label, val)) = line.rsplit_once(':') {
+            let label = label.trim().trim_matches('"').to_string();
+            if let Ok(v) = val.trim().parse::<f64>() {
+                if v > 0.0 {
+                    slices.push((label, v));
+                }
+            }
+        }
+    }
+    if slices.is_empty() {
+        return false;
+    }
+    let total: f64 = slices.iter().map(|(_, v)| *v).sum();
+    let radius = 100.0f32;
+    let legend_w = 220.0f32;
+    let size = Vec2::new(radius * 2.0 + 30.0 + legend_w, radius * 2.0 + 30.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let center = rect.min + Vec2::new(radius + 15.0, radius + 15.0);
+    let colors = [
+        egui::Color32::from_rgb(0x8a, 0x5c, 0xf5),
+        egui::Color32::from_rgb(0x4f, 0xc1, 0x9a),
+        egui::Color32::from_rgb(0xe0, 0x8c, 0x4f),
+        egui::Color32::from_rgb(0x5a, 0x9c, 0xe0),
+        egui::Color32::from_rgb(0xd0, 0x5f, 0x8f),
+        egui::Color32::from_rgb(0xb8, 0xc0, 0x4f),
+        egui::Color32::from_rgb(0x9a, 0x7a, 0xd0),
+        egui::Color32::from_rgb(0x66, 0xb8, 0xb8),
+    ];
+    let mut angle = -std::f32::consts::FRAC_PI_2;
+    for (i, (_label, v)) in slices.iter().enumerate() {
+        let sweep = (*v / total * std::f64::consts::TAU) as f32;
+        let steps = ((sweep / 0.12).ceil() as usize).max(3);
+        let mut pts = vec![center];
+        for s in 0..=steps {
+            let a = angle + sweep * (s as f32 / steps as f32);
+            pts.push(center + Vec2::new(a.cos(), a.sin()) * radius);
+        }
+        let color = colors[i % colors.len()];
+        painter.add(egui::Shape::convex_polygon(
+            pts,
+            color,
+            egui::Stroke::new(1.0_f32, ui.visuals().panel_fill),
+        ));
+        angle += sweep;
+    }
+    // Legend.
+    let mut y = rect.min.y + 26.0;
+    if !title.is_empty() {
+        painter.text(
+            egui::pos2(rect.min.x + radius * 2.0 + 40.0, rect.min.y + 6.0),
+            egui::Align2::LEFT_TOP,
+            &title,
+            egui::FontId::proportional(14.0),
+            ui.visuals().text_color(),
+        );
+        y += 12.0;
+    }
+    for (i, (label, v)) in slices.iter().enumerate() {
+        let x = rect.min.x + radius * 2.0 + 34.0;
+        let color = colors[i % colors.len()];
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(x, y), Vec2::splat(10.0)),
+            egui::Rounding::same(2.0),
+            color,
+        );
+        let pct = *v / total * 100.0;
+        painter.text(
+            egui::pos2(x + 16.0, y - 1.0),
+            egui::Align2::LEFT_TOP,
+            format!("{label} — {pct:.1}%"),
+            egui::FontId::proportional(12.0),
+            ui.visuals().text_color(),
+        );
+        y += 20.0;
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new("mermaid · pie chart").weak().small());
     true
 }
 

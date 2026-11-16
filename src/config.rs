@@ -56,9 +56,24 @@ pub struct Config {
     /// Whether the Vim editing mode is enabled.
     #[serde(default)]
     pub vim: bool,
+    /// Render markdown syntax concealed while editing (WYSIWYG-style).
+    #[serde(default = "default_true")]
+    pub wysiwyg: bool,
+    /// Underline misspelled words in the editor.
+    #[serde(default)]
+    pub spellcheck: bool,
     /// Startup window mode: `"fullscreen"`, `"maximized"`, or `"windowed"`.
     #[serde(default = "default_window_mode")]
     pub window_mode: String,
+    /// Graph colour groups: a tag prefix → palette index (0..7).
+    #[serde(default)]
+    pub graph_color_groups: Vec<(String, usize)>,
+    /// Graph force layout: repulsion multiplier.
+    #[serde(default = "default_force")]
+    pub graph_repulsion: f32,
+    /// Graph force layout: spring/attraction multiplier.
+    #[serde(default = "default_force")]
+    pub graph_attraction: f32,
 
     // --- Workspace state (restored on next launch) ---
     /// Paths of the notes that were open, in order.
@@ -107,6 +122,10 @@ fn default_window_mode() -> String {
     "fullscreen".to_string()
 }
 
+fn default_force() -> f32 {
+    1.0
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -119,7 +138,12 @@ impl Default for Config {
             daily_template: String::new(),
             templates_dir: default_templates(),
             vim: false,
+            wysiwyg: true,
+            spellcheck: false,
             window_mode: default_window_mode(),
+            graph_color_groups: Vec::new(),
+            graph_repulsion: 1.0,
+            graph_attraction: 1.0,
             open_tabs: Vec::new(),
             active_tab: 0,
             show_right: true,

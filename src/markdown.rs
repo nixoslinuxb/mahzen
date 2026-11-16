@@ -35,6 +35,7 @@ enum Inline {
     },
     Footnote(String),
     Math(String),
+    Highlight(String),
 }
 
 /// Extract all wikilink targets appearing in a block of markdown.
@@ -109,6 +110,50 @@ fn parse_inline(line: &str) -> Vec<Inline> {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
+        // Obsidian comment: %% ... %% (drop it entirely).
+        if c == '%' && i + 1 < chars.len() && chars[i + 1] == '%' {
+            flush!();
+            let mut j = i + 2;
+            let mut end = chars.len();
+            while j + 1 < chars.len() {
+                if chars[j] == '%' && chars[j + 1] == '%' {
+                    end = j + 2;
+                    break;
+                }
+                j += 1;
+            }
+            i = end;
+            continue;
+        }
+        // Highlight: ==text==
+        if c == '=' && i + 1 < chars.len() && chars[i + 1] == '=' {
+            if let Some(close) = chars[i + 2..].iter().position(|&x| x == '=') {
+                let inner: String = chars[i + 2..i + 2 + close].iter().collect();
+                flush!();
+                out.push(Inline::Highlight(inner));
+                i = i + 2 + close + 1;
+                continue;
+            }
+        }
+        // Inline HTML: drop tags (keep <br> as a line break).
+        if c == '<' {
+            if let Some(close) = chars[i..].iter().position(|&x| x == '>') {
+                let tag: String = chars[i + 1..i + close].iter().collect();
+                let lname = tag.trim_start_matches('/').to_ascii_lowercase();
+                flush!();
+                if lname == "br" || lname == "br/" {
+                    out.push(Inline::Text {
+                        text: "\n".into(),
+                        bold,
+                        italic,
+                        strike,
+                        code,
+                    });
+                }
+                i = i + close + 1;
+                continue;
+            }
+        }
         // Wikilink: [[target]] or [[target|alias]]
         if c == '[' && i + 1 < chars.len() && chars[i + 1] == '[' {
             if let Some(close) = find_close(&chars, i) {
@@ -295,10 +340,28 @@ pub fn render(
             continue;
         }
 
-        // Embed: ![[target]]
+        // Obsidian multi-line comment block: %% ... %%
+        if trimmed.starts_with("%%") {
+            let mut closed = trimmed.len() > 4 && trimmed.ends_with("%%");
+            i += 1;
+            while i < lines.len() && !closed {
+                if lines[i].trim_end().ends_with("%%") {
+                    closed = true;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        // Embed: ![[target]] (media embeds are drawn by the attachment strip).
         if trimmed.starts_with("![[") {
             if let Some(end) = trimmed.find("]]") {
                 let target = trimmed[3..end].trim();
+                let path = target.split('|').next().unwrap_or(target).trim();
+                if is_media_target(path) {
+                    i += 1;
+                    continue;
+                }
                 render_embed(ui, target, base_size, embed, fence, depth, &mut clicked);
                 i += 1;
                 continue;
@@ -314,7 +377,7 @@ pub fn render(
                 rows.push(parse_table_row(lines[i]));
                 i += 1;
             }
-            render_table(ui, &rows, base_size, &mut clicked, i);
+            render_table(ui, &rows, base_size, &mut clicked, i, embed);
             continue;
         }
 
@@ -336,7 +399,10 @@ pub fn render(
             let mut body = String::new();
             i += 1;
             while i < lines.len() && lines[i].trim_start().starts_with('>') {
-                body.push_str(lines[i].trim_start().trim_start_matches('>').trim_start());
+                // Strip exactly one quote level so nested callouts stay nested.
+                let raw = lines[i].trim_start();
+                let inner = raw.strip_prefix('>').unwrap_or(raw);
+                body.push_str(inner.trim_start());
                 body.push('\n');
                 i += 1;
             }
@@ -375,7 +441,7 @@ pub fn render(
                     let body = rest[colon + 2..].trim();
                     ui.horizontal_wrapped(|ui| {
                         ui.label(RichText::new(format!("[^{id}]")).small().weak());
-                        render_segments(ui, body, base_size * 0.9, &mut clicked);
+                        render_segments(ui, body, base_size * 0.9, &mut clicked, embed);
                     });
                     i += 1;
                     continue;
@@ -408,7 +474,7 @@ pub fn render(
         if let Some(rest) = trimmed.strip_prefix("> ") {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("▏").color(ui.visuals().hyperlink_color));
-                render_segments(ui, rest, base_size, &mut clicked);
+                render_segments(ui, rest, base_size, &mut clicked, embed);
             });
             i += 1;
             continue;
@@ -421,7 +487,7 @@ pub fn render(
             let rest = trimmed[6..].to_string();
             ui.horizontal_wrapped(|ui| {
                 ui.label(if checked { "☑" } else { "☐" });
-                render_segments(ui, &rest, base_size, &mut clicked);
+                render_segments(ui, &rest, base_size, &mut clicked, embed);
             });
             i += 1;
             continue;
@@ -431,7 +497,7 @@ pub fn render(
         if let Some(rest) = bullet_prefix(trimmed) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("•").color(ui.visuals().hyperlink_color));
-                render_segments(ui, rest, base_size, &mut clicked);
+                render_segments(ui, rest, base_size, &mut clicked, embed);
             });
             i += 1;
             continue;
@@ -441,7 +507,7 @@ pub fn render(
         if let Some((num, rest)) = numbered_prefix(trimmed) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(num).color(ui.visuals().hyperlink_color));
-                render_segments(ui, rest, base_size, &mut clicked);
+                render_segments(ui, rest, base_size, &mut clicked, embed);
             });
             i += 1;
             continue;
@@ -477,7 +543,7 @@ pub fn render(
             }
         } else {
             ui.horizontal_wrapped(|ui| {
-                render_segments(ui, trimmed, base_size, &mut clicked);
+                render_segments(ui, trimmed, base_size, &mut clicked, embed);
             });
         }
         i += 1;
@@ -486,11 +552,50 @@ pub fn render(
     clicked
 }
 
+fn ellipsize_text(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn is_media_target(target: &str) -> bool {
+    let ext = std::path::Path::new(target)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "bmp"
+            | "svg"
+            | "mp3"
+            | "ogg"
+            | "oga"
+            | "wav"
+            | "m4a"
+            | "flac"
+            | "opus"
+            | "mp4"
+            | "webm"
+            | "mkv"
+            | "mov"
+            | "avi"
+    )
+}
+
 fn display_math(ui: &mut egui::Ui, tex: &str, base_size: f32) {
-    let s = crate::math::latex_to_unicode(tex.trim());
     ui.add_space(2.0);
     ui.vertical_centered(|ui| {
-        ui.label(RichText::new(s).italics().size(base_size * 1.25));
+        draw_math(ui, tex.trim(), base_size * 1.25, true);
     });
     ui.add_space(2.0);
 }
@@ -606,6 +711,7 @@ fn render_table(
     base_size: f32,
     clicked: &mut Vec<LinkClick>,
     salt: usize,
+    embed: &dyn Fn(&str) -> Option<(String, String)>,
 ) {
     egui::Grid::new(("md-table", salt))
         .striped(true)
@@ -615,9 +721,9 @@ fn render_table(
                 for cell in row {
                     ui.horizontal_wrapped(|ui| {
                         if r == 0 {
-                            render_segments_bold(ui, cell, base_size, clicked);
+                            render_segments_bold(ui, cell, base_size, clicked, embed);
                         } else {
-                            render_segments(ui, cell, base_size, clicked);
+                            render_segments(ui, cell, base_size, clicked, embed);
                         }
                     });
                 }
@@ -632,6 +738,7 @@ fn render_segments_bold(
     line: &str,
     base_size: f32,
     clicked: &mut Vec<LinkClick>,
+    embed: &dyn Fn(&str) -> Option<(String, String)>,
 ) {
     for seg in parse_inline(line) {
         match seg {
@@ -647,18 +754,30 @@ fn render_segments_bold(
                 }
                 ui.label(rt);
             }
-            other => render_one(ui, other, base_size, clicked),
+            other => render_one(ui, other, base_size, clicked, embed),
         }
     }
 }
 
-fn render_segments(ui: &mut egui::Ui, line: &str, base_size: f32, clicked: &mut Vec<LinkClick>) {
+fn render_segments(
+    ui: &mut egui::Ui,
+    line: &str,
+    base_size: f32,
+    clicked: &mut Vec<LinkClick>,
+    embed: &dyn Fn(&str) -> Option<(String, String)>,
+) {
     for seg in parse_inline(line) {
-        render_one(ui, seg, base_size, clicked);
+        render_one(ui, seg, base_size, clicked, embed);
     }
 }
 
-fn render_one(ui: &mut egui::Ui, seg: Inline, base_size: f32, clicked: &mut Vec<LinkClick>) {
+fn render_one(
+    ui: &mut egui::Ui,
+    seg: Inline,
+    base_size: f32,
+    clicked: &mut Vec<LinkClick>,
+    embed: &dyn Fn(&str) -> Option<(String, String)>,
+) {
     match seg {
         Inline::Text {
             text,
@@ -686,10 +805,18 @@ fn render_one(ui: &mut egui::Ui, seg: Inline, base_size: f32, clicked: &mut Vec<
         }
         Inline::Wiki { target, alias } => {
             let color = ui.visuals().hyperlink_color;
-            if ui
-                .link(RichText::new(alias).size(base_size).color(color))
-                .clicked()
-            {
+            let resp = ui.link(RichText::new(alias).size(base_size).color(color));
+            // Hover preview: show the linked note's title and opening lines.
+            if let Some((title, body)) = embed(&target) {
+                resp.clone().on_hover_ui(|ui| {
+                    ui.set_max_width(360.0);
+                    ui.label(RichText::new(title).strong());
+                    ui.separator();
+                    let preview: String = body.lines().take(12).collect::<Vec<_>>().join("\n");
+                    ui.label(RichText::new(ellipsize_text(&preview, 600)).small());
+                });
+            }
+            if resp.clicked() {
                 clicked.push(LinkClick::Wiki(target));
             }
         }
@@ -716,10 +843,27 @@ fn render_one(ui: &mut egui::Ui, seg: Inline, base_size: f32, clicked: &mut Vec<
             );
         }
         Inline::Math(tex) => {
-            let s = crate::math::latex_to_unicode(&tex);
-            ui.label(RichText::new(s).italics().size(base_size * 1.05));
+            draw_math(ui, &tex, base_size * 1.05, false);
+        }
+        Inline::Highlight(text) => {
+            ui.label(
+                RichText::new(text)
+                    .size(base_size)
+                    .background_color(egui::Color32::from_rgb(0x5a, 0x4a, 0x1e)),
+            );
         }
     }
+}
+
+/// Lay out and draw a math expression with the native LaTeX renderer.
+fn draw_math(ui: &mut egui::Ui, tex: &str, size: f32, display: bool) {
+    let layout = crate::math::layout_math(ui, tex, size, display);
+    if layout.width <= 0.0 {
+        return;
+    }
+    let h = (layout.ascent + layout.descent).max(1.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(layout.width, h), Sense::hover());
+    crate::math::paint_math(ui.painter(), rect, &layout, ui.visuals().text_color());
 }
 
 fn bullet_prefix(line: &str) -> Option<&str> {
@@ -741,6 +885,404 @@ fn numbered_prefix(line: &str) -> Option<(String, &str)> {
         Some((format!("{digits}."), rest))
     } else {
         None
+    }
+}
+
+// ---------------------------------------------------------- WYSIWYG editing
+
+/// Inline emphasis state while scanning a line of markdown.
+#[derive(Clone, Copy, Default)]
+struct InlineFlags {
+    bold: bool,
+    italic: bool,
+    strike: bool,
+    code: bool,
+}
+
+/// Build a [`egui::text::LayoutJob`] for the editor that renders markdown with
+/// its syntax markers hidden (dimensionally collapsed) and its content styled.
+///
+/// The job text is byte-for-byte identical to `text`, so the caret/selection
+/// indices used by `TextEdit` stay valid. Misspelled words are underlined.
+pub fn wysiwyg_job(
+    text: &str,
+    base_size: f32,
+    conceal: bool,
+    misspelled: &std::collections::HashSet<String>,
+) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob {
+        break_on_newline: true,
+        ..Default::default()
+    };
+    job.wrap.max_width = f32::INFINITY;
+
+    let mut start = 0usize;
+    loop {
+        let end = text[start..]
+            .find('\n')
+            .map(|p| start + p)
+            .unwrap_or(text.len());
+        let line = &text[start..end];
+        push_wysiwyg_line(&mut job, line, base_size, conceal, misspelled);
+        if end >= text.len() {
+            break;
+        }
+        job.append("\n", 0.0, base_format(base_size, crate::theme::TEXT));
+        start = end + 1;
+    }
+    job
+}
+
+/// Overlay find-match highlights onto an existing [`LayoutJob`] without
+/// changing its text or byte offsets.
+pub fn apply_highlights(job: &mut egui::text::LayoutJob, ranges: &[(usize, usize)]) {
+    if ranges.is_empty() {
+        return;
+    }
+    let mut out: Vec<egui::text::LayoutSection> = Vec::new();
+    for section in &job.sections {
+        let (mut a, b) = (section.byte_range.start, section.byte_range.end);
+        let mut cuts: Vec<usize> = ranges
+            .iter()
+            .flat_map(|(s, e)| [*s, *e])
+            .filter(|p| *p > a && *p < b)
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        cuts.push(b);
+        let mut first = true;
+        for cut in cuts {
+            let mut fmt = section.format.clone();
+            let hit = ranges.iter().any(|(s, e)| a >= *s && a < *e);
+            if hit {
+                fmt.background = crate::theme::ACCENT.linear_multiply(0.35);
+            }
+            out.push(egui::text::LayoutSection {
+                leading_space: if first { section.leading_space } else { 0.0 },
+                byte_range: a..cut,
+                format: fmt,
+            });
+            first = false;
+            a = cut;
+        }
+    }
+    job.sections = out;
+}
+
+fn base_format(size: f32, color: Color32) -> egui::text::TextFormat {
+    egui::text::TextFormat {
+        font_id: egui::FontId::monospace(size),
+        color,
+        ..Default::default()
+    }
+}
+
+fn hidden_format() -> egui::text::TextFormat {
+    egui::text::TextFormat {
+        font_id: egui::FontId::monospace(1.0),
+        color: Color32::TRANSPARENT,
+        extra_letter_spacing: 0.0,
+        ..Default::default()
+    }
+}
+
+fn push_wysiwyg_line(
+    job: &mut egui::text::LayoutJob,
+    line: &str,
+    base_size: f32,
+    conceal: bool,
+    misspelled: &std::collections::HashSet<String>,
+) {
+    if line.is_empty() {
+        return;
+    }
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+
+    // Fenced code lines are shown verbatim in a muted monospace face.
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        job.append(
+            line,
+            0.0,
+            egui::text::TextFormat {
+                font_id: egui::FontId::monospace(base_size),
+                color: Color32::from_gray(0x8a),
+                background: Color32::from_gray(0x24),
+                ..Default::default()
+            },
+        );
+        return;
+    }
+
+    // Headings: hide the `#` markers and scale the text.
+    if conceal {
+        let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) && trimmed.chars().nth(hashes).is_some_and(|c| c == ' ') {
+            let prefix = indent + hashes + 1;
+            job.append(&line[..prefix], 0.0, hidden_format());
+            let scale = match hashes {
+                1 => 1.5,
+                2 => 1.3,
+                3 => 1.15,
+                _ => 1.05,
+            };
+            let fmt = base_format(base_size * scale, crate::theme::TEXT);
+            emit_inline(
+                job,
+                &line[prefix..],
+                fmt,
+                InlineFlags::default(),
+                conceal,
+                misspelled,
+            );
+            return;
+        }
+        // Blockquotes: hide `> ` and mute the text.
+        if trimmed.starts_with('>') {
+            let mut prefix = indent;
+            while line[prefix..].starts_with('>') {
+                prefix += 1;
+                if line[prefix..].starts_with(' ') {
+                    prefix += 1;
+                }
+            }
+            job.append(&line[..prefix], 0.0, hidden_format());
+            let fmt = base_format(base_size, Color32::from_gray(0xa8));
+            let flags = InlineFlags {
+                italic: true,
+                ..Default::default()
+            };
+            emit_inline(job, &line[prefix..], fmt, flags, conceal, misspelled);
+            return;
+        }
+    }
+
+    let fmt = base_format(base_size, crate::theme::TEXT);
+    emit_inline(job, line, fmt, InlineFlags::default(), conceal, misspelled);
+}
+
+fn style_for(
+    fmt: &egui::text::TextFormat,
+    flags: InlineFlags,
+    link: bool,
+) -> egui::text::TextFormat {
+    let mut out = fmt.clone();
+    if flags.bold {
+        out.color = Color32::from_gray(0xf4);
+        out.extra_letter_spacing = 0.2;
+    }
+    if flags.italic {
+        out.italics = true;
+    }
+    if flags.strike {
+        out.strikethrough = egui::Stroke::new(1.0_f32, out.color);
+    }
+    if flags.code {
+        out.font_id = egui::FontId::monospace(out.font_id.size * 0.96);
+        out.background = Color32::from_gray(0x2c);
+        out.color = Color32::from_rgb(0xc8, 0xc8, 0xc8);
+    }
+    if link {
+        out.color = crate::theme::LINK;
+        out.underline = egui::Stroke::new(1.0_f32, crate::theme::LINK);
+    }
+    out
+}
+
+fn emit_text(
+    job: &mut egui::text::LayoutJob,
+    text: &str,
+    fmt: egui::text::TextFormat,
+    misspelled: &std::collections::HashSet<String>,
+) {
+    if text.is_empty() {
+        return;
+    }
+    if misspelled.is_empty() {
+        job.append(text, 0.0, fmt);
+        return;
+    }
+    // Split into words and separators, marking unknown words.
+    let mut token = String::new();
+    let mut token_start = 0usize;
+    let mut last = 0usize;
+    for (i, c) in text.char_indices() {
+        let w = c.is_alphabetic() || c == '\'' || c == '-';
+        if w {
+            if token.is_empty() {
+                token_start = i;
+                if token_start > last {
+                    job.append(&text[last..token_start], 0.0, fmt.clone());
+                }
+            }
+            token.push(c);
+        } else if !token.is_empty() {
+            push_word(job, &token, &text[token_start..i], &fmt, misspelled);
+            token.clear();
+            last = i;
+        }
+    }
+    if !token.is_empty() {
+        push_word(job, &token, &text[token_start..], &fmt, misspelled);
+        last = text.len();
+    }
+    if last < text.len() {
+        job.append(&text[last..], 0.0, fmt.clone());
+    }
+}
+
+fn push_word(
+    job: &mut egui::text::LayoutJob,
+    word: &str,
+    original: &str,
+    fmt: &egui::text::TextFormat,
+    misspelled: &std::collections::HashSet<String>,
+) {
+    let known =
+        word.chars().all(|c| !c.is_alphabetic()) || !misspelled.contains(&word.to_lowercase());
+    if known {
+        job.append(original, 0.0, fmt.clone());
+    } else {
+        let mut flagged = fmt.clone();
+        flagged.underline = egui::Stroke::new(1.2_f32, crate::theme::DANGER);
+        job.append(original, 0.0, flagged);
+    }
+}
+
+fn emit_inline(
+    job: &mut egui::text::LayoutJob,
+    s: &str,
+    base: egui::text::TextFormat,
+    initial: InlineFlags,
+    conceal: bool,
+    misspelled: &std::collections::HashSet<String>,
+) {
+    let mut flags = initial;
+    let mut i = 0usize;
+    let mut plain = 0usize;
+
+    macro_rules! flush {
+        ($end:expr) => {
+            if $end > plain {
+                let fmt = style_for(&base, flags, false);
+                if flags.code {
+                    job.append(&s[plain..$end], 0.0, fmt);
+                } else {
+                    emit_text(job, &s[plain..$end], fmt, misspelled);
+                }
+            }
+        };
+    }
+
+    while i < s.len() {
+        let rest = &s[i..];
+        if conceal {
+            // Bold / strikethrough / code / italic markers.
+            if rest.starts_with("**") || rest.starts_with("__") {
+                flush!(i);
+                job.append(&s[i..i + 2], 0.0, hidden_format());
+                flags.bold = !flags.bold;
+                i += 2;
+                plain = i;
+                continue;
+            }
+            if rest.starts_with("~~") {
+                flush!(i);
+                job.append(&s[i..i + 2], 0.0, hidden_format());
+                flags.strike = !flags.strike;
+                i += 2;
+                plain = i;
+                continue;
+            }
+            if rest.starts_with('`') {
+                flush!(i);
+                job.append(&s[i..i + 1], 0.0, hidden_format());
+                flags.code = !flags.code;
+                i += 1;
+                plain = i;
+                continue;
+            }
+            if rest.starts_with('*') || rest.starts_with('_') {
+                flush!(i);
+                job.append(&s[i..i + 1], 0.0, hidden_format());
+                flags.italic = !flags.italic;
+                i += 1;
+                plain = i;
+                continue;
+            }
+            // Embeds `![[target]]`: show the target as a link.
+            if rest.starts_with("![[") {
+                if let Some(close) = rest.find("]]") {
+                    let inner = &rest[3..close];
+                    let (target, alias) = split_wiki(inner);
+                    flush!(i);
+                    job.append("![[", 0.0, hidden_format());
+                    let shown = if alias.is_empty() { target } else { alias };
+                    let fmt = style_for(&base, flags, true);
+                    emit_text(job, shown, fmt, misspelled);
+                    job.append("]]", 0.0, hidden_format());
+                    i += close + 2;
+                    plain = i;
+                    continue;
+                }
+            }
+            // Wikilinks `[[target|alias]]`: show the alias (or target).
+            if rest.starts_with("[[") {
+                if let Some(close) = rest.find("]]") {
+                    let inner = &rest[2..close];
+                    let (target, alias) = split_wiki(inner);
+                    flush!(i);
+                    job.append("[[", 0.0, hidden_format());
+                    let fmt = style_for(&base, flags, true);
+                    if alias.is_empty() {
+                        emit_text(job, target, fmt, misspelled);
+                    } else {
+                        job.append(&inner[..inner.len() - alias.len()], 0.0, hidden_format());
+                        emit_text(job, alias, fmt, misspelled);
+                    }
+                    job.append("]]", 0.0, hidden_format());
+                    i += close + 2;
+                    plain = i;
+                    continue;
+                }
+            }
+            // Markdown links `[text](url)`: show the text, hide the URL.
+            if rest.starts_with('[') {
+                if let Some(mid) = rest.find("](") {
+                    if let Some(close) = rest[mid + 2..].find(')') {
+                        let label = &rest[1..mid];
+                        if !label.is_empty() && !label.contains('\n') {
+                            flush!(i);
+                            job.append("[", 0.0, hidden_format());
+                            let fmt = style_for(&base, flags, true);
+                            emit_text(job, label, fmt, misspelled);
+                            job.append(&rest[mid..mid + 3 + close], 0.0, hidden_format());
+                            i += mid + 3 + close;
+                            plain = i;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Backslash escapes: hide the backslash itself.
+            if rest.starts_with('\\') && rest.len() > 1 {
+                flush!(i);
+                job.append("\\", 0.0, hidden_format());
+                i += 1;
+                plain = i;
+                continue;
+            }
+        }
+        i += s[i..].chars().next().map_or(1, |c| c.len_utf8());
+    }
+    flush!(s.len());
+}
+
+/// Split a wikilink body into `(target, alias)`.
+fn split_wiki(inner: &str) -> (&str, &str) {
+    match inner.rsplit_once('|') {
+        Some((target, alias)) => (target, alias),
+        None => (inner, ""),
     }
 }
 
