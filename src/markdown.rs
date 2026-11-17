@@ -614,12 +614,20 @@ pub fn render(
                     _ => base_size,
                 };
                 ui.add_space(6.0);
-                ui.label(
-                    RichText::new(rest.trim())
-                        .size(size)
-                        .strong()
-                        .color(crate::theme::heading_color(hashes)),
-                );
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    ui.label(
+                        RichText::new("▾")
+                            .size(size * 0.62)
+                            .color(crate::theme::TEXT_MUTED),
+                    );
+                    ui.label(
+                        RichText::new(rest.trim())
+                            .size(size)
+                            .strong()
+                            .color(crate::theme::heading_color(hashes)),
+                    );
+                });
                 ui.add_space(3.0);
                 i += 1;
                 continue;
@@ -657,7 +665,7 @@ pub fn render(
         // Bullet list.
         if let Some(rest) = bullet_prefix(trimmed) {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("•").color(ui.visuals().hyperlink_color));
+                ui.label(RichText::new("•").color(crate::theme::GOLD));
                 render_segments(ui, rest, base_size, &mut clicked, embed);
             });
             i += 1;
@@ -667,7 +675,7 @@ pub fn render(
         // Numbered list.
         if let Some((num, rest)) = numbered_prefix(trimmed) {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(num).color(ui.visuals().hyperlink_color));
+                ui.label(RichText::new(num).color(crate::theme::GOLD));
                 render_segments(ui, rest, base_size, &mut clicked, embed);
             });
             i += 1;
@@ -992,10 +1000,16 @@ fn render_one(
             ui.label(rt);
         }
         Inline::Wiki { target, alias } => {
-            let color = ui.visuals().hyperlink_color;
+            // Resolved links are periwinkle; unresolved ones are warm orange.
+            let resolved = embed(&target);
+            let color = if resolved.is_some() {
+                crate::theme::LINK
+            } else {
+                crate::theme::ORANGE
+            };
             let resp = ui.link(RichText::new(alias).size(base_size).color(color));
             // Hover preview: show the linked note's title and opening lines.
-            if let Some((title, body)) = embed(&target) {
+            if let Some((title, body)) = resolved {
                 resp.clone().on_hover_ui(|ui| {
                     ui.set_max_width(360.0);
                     ui.label(RichText::new(title).strong());

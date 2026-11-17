@@ -74,6 +74,15 @@ pub struct Config {
     /// Whether the second pane follows links clicked in the first pane.
     #[serde(default)]
     pub linked_pane: bool,
+    /// Show tabs as vertical, letter-stacked strips (sliding-panes look).
+    #[serde(default = "default_true")]
+    pub vertical_tabs: bool,
+    /// Show the mini graph at the bottom of the left sidebar.
+    #[serde(default = "default_true")]
+    pub sidebar_graph: bool,
+    /// Sort the tag pane by note count instead of name.
+    #[serde(default)]
+    pub tag_sort_count: bool,
     /// Graph colour groups: a tag prefix → palette index (0..7).
     #[serde(default)]
     pub graph_color_groups: Vec<(String, usize)>,
@@ -157,6 +166,9 @@ impl Default for Config {
             window_mode: default_window_mode(),
             bookmarks: Vec::new(),
             linked_pane: false,
+            vertical_tabs: true,
+            sidebar_graph: true,
+            tag_sort_count: false,
             graph_color_groups: Vec::new(),
             graph_repulsion: 1.0,
             graph_attraction: 1.0,

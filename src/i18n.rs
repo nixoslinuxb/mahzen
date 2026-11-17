@@ -337,6 +337,11 @@ const TR: &[(&str, &str)] = &[
         "Notları varsayılan olarak bölünmüş görünümde aç",
     ),
     ("Linked second pane", "Bağlantılı ikinci panel"),
+    (
+        "Vertical tab strips (sliding panes)",
+        "Dikey sekme şeritleri (kayan paneller)",
+    ),
+    ("Mini graph in the sidebar", "Kenar çubuğunda mini graf"),
     ("Language", "Dil"),
     ("Canvas name", "Canvas adı"),
     ("Create canvas", "Canvas oluştur"),
@@ -398,6 +403,8 @@ const TR: &[(&str, &str)] = &[
     ("{} note(s)", "{} not"),
     ("no vault", "kasa yok"),
     ("Backlinks ({})", "Geri bağlantılar ({})"),
+    ("Linked mentions ({})", "Bağlantılı anmalar ({})"),
+    ("Sort by count", "Sayıya göre sırala"),
     ("Unlinked mentions ({})", "Bağlantısız anmalar ({})"),
     ("Erase everything?", "Her şey silinsin mi?"),
     // ----------------------------------------------------------- status

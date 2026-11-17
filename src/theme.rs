@@ -37,18 +37,22 @@ pub const LINK: Color32 = Color32::from_rgb(0x7f, 0xa6, 0xe8);
 pub const BORDER: Color32 = Color32::from_rgb(0x3a, 0x3b, 0x47);
 pub const DANGER: Color32 = Color32::from_rgb(0xd9, 0x6a, 0x6a);
 pub const SUCCESS: Color32 = Color32::from_rgb(0x7b, 0xd9, 0xa5);
+/// LYT's signature gold used for bullets, the active pane edge and list markers.
+pub const GOLD: Color32 = Color32::from_rgb(0xd8, 0xc6, 0x5a);
+/// Warm orange for unresolved links.
+pub const ORANGE: Color32 = Color32::from_rgb(0xe0, 0x9a, 0x62);
 /// Text highlight (`==…==`): LYT's signature warm yellow.
 pub const HIGHLIGHT: Color32 = Color32::from_rgb(0xf2, 0xf0, 0x7e);
 pub const HIGHLIGHT_TEXT: Color32 = Color32::from_rgb(0x3a, 0x36, 0x14);
 
 /// Colored heading ramp (H1 → H6), like LYT Mode's rainbow headings.
 pub const HEADINGS: [Color32; 6] = [
-    Color32::from_rgb(0xc9, 0xb6, 0xff), // lavender
-    Color32::from_rgb(0xa9, 0xc4, 0xf5), // periwinkle
-    Color32::from_rgb(0x8f, 0xbf, 0xd8), // steel blue
+    Color32::from_rgb(0xc0, 0xa8, 0xf0), // lavender
+    Color32::from_rgb(0xe6, 0xe0, 0x7a), // gold
     Color32::from_rgb(0x9d, 0xc9, 0xb0), // sage
+    Color32::from_rgb(0xa9, 0xc4, 0xf5), // periwinkle
+    Color32::from_rgb(0xd0, 0x9a, 0xc0), // rose
     Color32::from_rgb(0xd8, 0xbf, 0x94), // sand
-    Color32::from_rgb(0xc9, 0xa3, 0xb8), // rose
 ];
 
 /// The heading colour for a markdown level (1-based).

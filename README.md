@@ -367,6 +367,19 @@ Details borrowed from that theme:
   circle for today plus a dot on days that have a daily note.
 - **Breadcrumb + inline title** — vault ▪ folders ▪ note above an oversized
   coloured note title.
+- **Vertical tab strips (sliding panes)** — tabs are narrow columns down the
+  left edge of the editor with the title letter-stacked, a gold edge on the
+  active note, a dirty dot, and preview/close buttons at the bottom (toggle in
+  Settings).
+- **Selected file preview** — the selected note in the explorer expands into a
+  rounded block showing its opening lines.
+- **Mini graph in the sidebar** — a read-only force-directed graph docked at the
+  bottom of the left panel; click a node to open that note.
+- **Tag pane** — a `#` header with a sort-by-count toggle, hierarchical tags
+  with chevrons and right-aligned counts.
+- **Coloured link states** — resolved wikilinks are periwinkle, unresolved ones
+  warm orange; list bullets and numbers are gold; headings carry a fold chevron.
+- **Status bar** — a mode chip, the current message and `N words  M characters`.
 - **Reading surface** — wider line height, rounded bordered code blocks, tinted
   callouts with an accent bar, and a quoted block with an accent rule.
 

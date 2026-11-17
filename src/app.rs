@@ -649,6 +649,10 @@ pub struct EncryptedNoteApp {
     column_index: usize,
     column_text: String,
     column_mode: usize,
+    /// Expanded parent tags in the tag pane.
+    tag_expanded: HashSet<String>,
+    /// Sort the tag pane by count rather than name.
+    tag_sort_count: bool,
     /// Cached spell-check results (hash of buffer, misspelled words).
     spell_cache: (u64, HashSet<String>),
     /// Settings window.
@@ -845,6 +849,7 @@ impl EncryptedNoteApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let config = Config::load();
         let initial_bookmarks = config.bookmarks.clone();
+        let initial_tag_sort = config.tag_sort_count;
         let initial_show_right = config.show_right;
         let initial_window_mode = config.window_mode.clone();
         crate::i18n::set(crate::i18n::Lang::from_code(&config.language));
@@ -913,6 +918,8 @@ impl EncryptedNoteApp {
             column_index: 0,
             column_text: String::new(),
             column_mode: 0,
+            tag_expanded: HashSet::new(),
+            tag_sort_count: initial_tag_sort,
             spell_cache: (0, HashSet::new()),
             settings_open: false,
             bookmarks: initial_bookmarks,
@@ -7134,15 +7141,34 @@ impl EncryptedNoteApp {
                             }
                         });
                 } else {
-                    theme::section_label(ui, "Vault");
+                    // Vault header: a small icon row above the centred vault
+                    // name, like Obsidian's file-explorer header.
                     ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Folder, 14.0, theme::ACCENT);
-                        ui.label(RichText::new("Files").size(12.0).strong());
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if icons::button(ui, Icon::File, 14.0, true, false, crate::tr!("New note"))
+                            .clicked()
+                        {
+                            self.new_note_open = true;
+                            self.new_note_error = None;
+                            self.new_note_name.clear();
+                        }
+                        if icons::button(
+                            ui,
+                            Icon::Refresh,
+                            14.0,
+                            true,
+                            false,
+                            crate::tr!("Refresh vault"),
+                        )
+                        .clicked()
+                        {
+                            self.refresh_vault();
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icons::button(
                                 ui,
                                 Icon::Add,
-                                16.0,
+                                15.0,
                                 true,
                                 false,
                                 crate::tr!("New note"),
@@ -7155,10 +7181,51 @@ impl EncryptedNoteApp {
                             }
                         });
                     });
+                    let vault_name = self
+                        .vault
+                        .as_ref()
+                        .map(|v| v.name())
+                        .unwrap_or_else(|| "—".into());
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(vault_name)
+                                .size(11.0)
+                                .color(theme::TEXT_MUTED),
+                        );
+                    });
+                    ui.separator();
+
+                    // Mini graph docked at the bottom of the sidebar.
+                    if self.config.sidebar_graph {
+                        egui::TopBottomPanel::bottom("sidebar_graph")
+                            .resizable(true)
+                            .default_height(200.0)
+                            .height_range(90.0..=420.0)
+                            .frame(
+                                egui::Frame::none()
+                                    .fill(theme::PANEL)
+                                    .inner_margin(egui::Margin::symmetric(2.0, 6.0)),
+                            )
+                            .show_inside(ui, |ui| {
+                                self.sidebar_graph_ui(ui);
+                            });
+                    }
 
                     let tree = self.tree.clone();
                     let selected = self.tabs.get(self.active).map(|t| t.path.clone());
                     let titles = self.titles.clone();
+                    // Excerpt lines shown under the selected note, like LYT's
+                    // inline file preview.
+                    let excerpt: Option<Vec<String>> =
+                        selected.as_ref().and_then(|p| self.metas.get(p)).map(|m| {
+                            m.body
+                                .lines()
+                                .map(str::trim)
+                                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                                .take(5)
+                                .map(|l| l.chars().take(46).collect::<String>())
+                                .collect()
+                        });
                     let mut actions = TreeActions::default();
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -7174,6 +7241,7 @@ impl EncryptedNoteApp {
                                 selected.as_deref(),
                                 &mut self.expanded_dirs,
                                 &titles,
+                                excerpt.as_deref(),
                                 &mut actions,
                             );
                         });
@@ -7601,38 +7669,86 @@ impl EncryptedNoteApp {
                         ui.label(RichText::new(&title).strong().size(16.0));
                         ui.separator();
 
-                        // Tags (vault-wide, hierarchical)
-                        egui::CollapsingHeader::new(crate::tr!("Tags"))
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                if icons::button(
-                                    ui,
-                                    Icon::Edit,
-                                    13.0,
-                                    true,
-                                    false,
-                                    "Manage tags (rename / merge / delete)",
-                                )
-                                .clicked()
-                                {
-                                    self.tag_manager_open = true;
-                                    self.tag_rename_from.clear();
-                                    self.tag_rename_to.clear();
-                                }
-                                let tree = self.index.tag_tree();
-                                if tree.is_empty() {
-                                    ui.weak(crate::tr!("No tags yet"));
-                                }
-                                let mut clicked_tag: Option<String> = None;
-                                for node in &tree {
-                                    tag_tree_row(ui, node, 0, &mut clicked_tag);
-                                }
-                                if let Some(tag) = clicked_tag {
-                                    self.tag_filter = Some(tag);
-                                    self.show_search_results = false;
-                                    self.search.clear();
-                                }
-                            });
+                        // Tags (vault-wide, hierarchical) — "#" pane header with
+                        // a compact icon toolbar, like the tag pane in LYT Mode.
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("#")
+                                    .size(15.0)
+                                    .strong()
+                                    .color(theme::TEXT_MUTED),
+                            );
+                            ui.label(
+                                RichText::new(crate::tr!("Tags"))
+                                    .size(10.0)
+                                    .strong()
+                                    .color(theme::TEXT_MUTED),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if icons::button(
+                                        ui,
+                                        Icon::Edit,
+                                        13.0,
+                                        true,
+                                        false,
+                                        "Manage tags (rename / merge / delete)",
+                                    )
+                                    .clicked()
+                                    {
+                                        self.tag_manager_open = true;
+                                        self.tag_rename_from.clear();
+                                        self.tag_rename_to.clear();
+                                    }
+                                    let sort_resp = ui.add(
+                                        egui::Button::new(RichText::new("⇅").size(12.0).color(
+                                            if self.tag_sort_count {
+                                                theme::TEXT
+                                            } else {
+                                                theme::TEXT_MUTED
+                                            },
+                                        ))
+                                        .frame(self.tag_sort_count)
+                                        .small(),
+                                    );
+                                    if sort_resp
+                                        .on_hover_text(crate::tr!("Sort by count"))
+                                        .clicked()
+                                    {
+                                        self.tag_sort_count = !self.tag_sort_count;
+                                        self.config.tag_sort_count = self.tag_sort_count;
+                                        self.config.save();
+                                    }
+                                },
+                            );
+                        });
+                        ui.separator();
+                        let mut tree = self.index.tag_tree();
+                        if self.tag_sort_count {
+                            tree.sort_by(|a, b| b.count.cmp(&a.count).then(a.name.cmp(&b.name)));
+                        } else {
+                            tree.sort_by_key(|n| n.name.to_lowercase());
+                        }
+                        if tree.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(crate::tr!("No tags yet"))
+                                    .size(10.5)
+                                    .color(theme::TEXT_MUTED),
+                            );
+                        }
+                        let mut clicked_tag: Option<String> = None;
+                        for node in &tree {
+                            tag_tree_row(ui, node, 0, &mut self.tag_expanded, &mut clicked_tag);
+                        }
+                        if let Some(tag) = clicked_tag {
+                            self.tag_filter = Some(tag);
+                            self.show_search_results = false;
+                            self.search.clear();
+                        }
+                        ui.separator();
 
                         // Properties (frontmatter)
                         let props = frontmatter::properties(&text);
@@ -7720,7 +7836,7 @@ impl EncryptedNoteApp {
 
                         // Backlinks
                         let count = self.backlinks.len();
-                        egui::CollapsingHeader::new(crate::tr!("Backlinks ({})", count))
+                        egui::CollapsingHeader::new(crate::tr!("Linked mentions ({})", count))
                             .default_open(true)
                             .show(ui, |ui| {
                                 if self.backlinks.is_empty() {
@@ -7950,7 +8066,11 @@ impl EncryptedNoteApp {
                 return;
             }
 
-            self.tab_strip(ui);
+            if self.config.vertical_tabs {
+                self.vertical_tab_strip(ui);
+            } else {
+                self.tab_strip(ui);
+            }
 
             if self.find_open {
                 self.find_bar_ui(ui);
@@ -8220,6 +8340,226 @@ impl EncryptedNoteApp {
             self.close_tab(i);
         }
         ui.add_space(6.0);
+    }
+
+    /// Obsidian "sliding panes" look: tabs as narrow vertical strips with the
+    /// title letter-stacked down the left edge of the editor.
+    fn vertical_tab_strip(&mut self, ui: &mut egui::Ui) {
+        let n = self.tabs.len();
+        if n == 0 {
+            return;
+        }
+        let w = 34.0f32;
+        let frame = egui::Frame::none()
+            .fill(theme::PANEL_DEEP)
+            .inner_margin(egui::Margin::symmetric(3.0, 0.0));
+        let mut select: Option<usize> = None;
+        let mut close: Option<usize> = None;
+        let mut preview: Option<usize> = None;
+        egui::SidePanel::left("vertical_tabs")
+            .frame(frame)
+            .exact_width(w * n as f32 + 6.0)
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                let h = ui.available_height();
+                let (row, _) =
+                    ui.allocate_exact_size(egui::vec2(w * n as f32, h), egui::Sense::hover());
+                let painter = ui.painter();
+                for i in 0..n {
+                    let active = i == self.active;
+                    let rect = egui::Rect::from_min_size(
+                        egui::pos2(row.min.x + w * i as f32, row.min.y),
+                        egui::vec2(w, h),
+                    );
+                    painter.rect_filled(
+                        rect,
+                        0.0,
+                        if active {
+                            theme::BASE
+                        } else {
+                            theme::PANEL_DEEP
+                        },
+                    );
+                    if i + 1 < n {
+                        painter.line_segment(
+                            [
+                                egui::pos2(rect.max.x, rect.min.y + 6.0),
+                                egui::pos2(rect.max.x, rect.max.y - 6.0),
+                            ],
+                            egui::Stroke::new(1.0_f32, theme::BORDER),
+                        );
+                    }
+                    if active {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(rect.min, egui::vec2(2.0, h)),
+                            0.0,
+                            theme::GOLD,
+                        );
+                    }
+                    // Letter-stacked title.
+                    let title = self.tabs[i].title.clone();
+                    let color = if active {
+                        theme::TEXT
+                    } else {
+                        theme::TEXT_MUTED
+                    };
+                    let mut y = rect.min.y + 12.0;
+                    for ch in title.chars().filter(|c| !c.is_whitespace()) {
+                        if y + 11.0 > rect.max.y - 62.0 {
+                            break;
+                        }
+                        painter.text(
+                            egui::pos2(rect.center().x, y),
+                            egui::Align2::CENTER_TOP,
+                            ch.to_string(),
+                            egui::FontId::proportional(9.5),
+                            color,
+                        );
+                        y += 10.5;
+                    }
+                    if self.tabs[i].dirty() {
+                        painter.circle_filled(
+                            egui::pos2(rect.center().x, rect.min.y + 5.0),
+                            2.0,
+                            theme::ACCENT,
+                        );
+                    }
+                    // Bottom action icons: preview + close.
+                    let eye = egui::Rect::from_center_size(
+                        egui::pos2(rect.center().x, rect.max.y - 34.0),
+                        egui::vec2(20.0, 18.0),
+                    );
+                    let eye_resp =
+                        ui.interact(eye, ui.id().with(("vtabeye", i)), egui::Sense::click());
+                    if active {
+                        painter.circle_stroke(eye.center(), 5.0, egui::Stroke::new(1.0_f32, color));
+                        painter.circle_filled(eye.center(), 1.6, color);
+                    } else {
+                        painter.text(
+                            eye.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "◎",
+                            egui::FontId::proportional(10.0),
+                            color,
+                        );
+                    }
+                    let x = egui::Rect::from_center_size(
+                        egui::pos2(rect.center().x, rect.max.y - 14.0),
+                        egui::vec2(20.0, 18.0),
+                    );
+                    let x_resp = ui.interact(x, ui.id().with(("vtabx", i)), egui::Sense::click());
+                    painter.text(
+                        x.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "×",
+                        egui::FontId::proportional(11.0),
+                        color,
+                    );
+                    let resp = ui.interact(rect, ui.id().with(("vtab", i)), egui::Sense::click());
+                    if resp.clicked() {
+                        if ui.input(|inp| inp.modifiers.command) {
+                            self.secondary = Some(i);
+                            self.secondary_live_line = 0;
+                            self.status = crate::tr!("Loaded into second pane").into();
+                        } else {
+                            select = Some(i);
+                        }
+                    }
+                    if resp.hovered() && !active {
+                        painter.rect_filled(rect, 0.0, theme::WIDGET.linear_multiply(0.30));
+                    }
+                    if resp.hovered() {
+                        resp.on_hover_text(title.clone());
+                    }
+                    if eye_resp.clicked() {
+                        preview = Some(i);
+                    }
+                    if x_resp.clicked() {
+                        close = Some(i);
+                    }
+                }
+            });
+        if let Some(i) = preview {
+            self.active = i;
+            self.set_view(ViewMode::Preview);
+        }
+        if let Some(i) = select {
+            self.active = i;
+        }
+        if let Some(i) = close {
+            self.close_tab(i);
+        }
+    }
+
+    /// A compact, read-only graph docked at the bottom of the left sidebar.
+    fn sidebar_graph_ui(&mut self, ui: &mut egui::Ui) {
+        let nodes = self.graph_nodes.clone();
+        let pos = self.graph_pos.clone();
+        let edges = self.graph_edges.clone();
+        if nodes.is_empty() {
+            ui.add_space(10.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(crate::tr!("No notes to graph"))
+                        .size(10.0)
+                        .color(theme::TEXT_MUTED),
+                );
+            });
+            return;
+        }
+        theme::section_label(ui, "Graph");
+        let rect = ui.available_rect_before_wrap();
+        if rect.width() < 40.0 || rect.height() < 40.0 {
+            return;
+        }
+        ui.allocate_rect(rect, egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        let center = rect.center();
+        let scale = rect.width().min(rect.height()) * 0.44;
+        let active = self.tabs.get(self.active).map(|t| t.path.clone());
+        let mut clicked: Option<PathBuf> = None;
+        // Edges.
+        for (a, b) in &edges {
+            let (Some(pa), Some(pb)) = (pos.get(*a), pos.get(*b)) else {
+                continue;
+            };
+            painter.line_segment(
+                [
+                    center + egui::vec2(pa.0 * scale, pa.1 * scale),
+                    center + egui::vec2(pb.0 * scale, pb.1 * scale),
+                ],
+                egui::Stroke::new(0.8_f32, theme::TEXT_MUTED.gamma_multiply(0.35)),
+            );
+        }
+        // Nodes.
+        let palette = [theme::GOLD, theme::ACCENT_2, theme::ACCENT, theme::SUCCESS];
+        for (i, path) in nodes.iter().enumerate() {
+            let Some(p) = pos.get(i) else { continue };
+            let point = center + egui::vec2(p.0 * scale, p.1 * scale);
+            if !rect.contains(point) {
+                continue;
+            }
+            let is_active = active.as_deref() == Some(path.as_path());
+            let color = if is_active {
+                theme::TEXT
+            } else {
+                palette[i % palette.len()]
+            };
+            let r = if is_active { 3.6 } else { 2.6 };
+            let hit = egui::Rect::from_center_size(point, egui::vec2(12.0, 12.0));
+            let resp = ui.interact(hit, ui.id().with(("minigraph", i)), egui::Sense::click());
+            painter.circle_filled(
+                point,
+                r,
+                color.gamma_multiply(if resp.hovered() { 1.0 } else { 0.85 }),
+            );
+            if resp.clicked() {
+                clicked = Some(path.clone());
+            }
+        }
+        if let Some(p) = clicked {
+            self.pending_open = Some(p);
+        }
     }
 
     /// Render the force-directed graph view of notes and their links, with
@@ -9765,6 +10105,14 @@ impl EncryptedNoteApp {
                             &mut self.config.wysiwyg,
                             "Conceal markdown while editing (WYSIWYG)",
                         );
+                        ui.checkbox(
+                            &mut self.config.vertical_tabs,
+                            crate::tr!("Vertical tab strips (sliding panes)"),
+                        );
+                        ui.checkbox(
+                            &mut self.config.sidebar_graph,
+                            crate::tr!("Mini graph in the sidebar"),
+                        );
                         ui.checkbox(&mut self.config.spellcheck, crate::tr!("Spell check"));
                         ui.checkbox(&mut self.config.vim, crate::tr!("Vim mode"));
                         ui.checkbox(
@@ -10674,21 +11022,38 @@ impl EncryptedNoteApp {
                                 .small(),
                         );
                     }
+                    if let Some(tab) = self.tabs.get(self.active) {
+                        let mode = match tab.view {
+                            ViewMode::Edit => "Edit",
+                            ViewMode::Split => "Split",
+                            ViewMode::Preview => "Preview",
+                            ViewMode::Live => "Live",
+                        };
+                        theme::tag_pill(ui, mode, true);
+                    }
                     if self.status.is_empty() {
                         let vault = self
                             .vault
                             .as_ref()
                             .map(|v| crate::tr!("{} note(s)", v.notes.len()))
                             .unwrap_or_else(|| crate::tr!("no vault").to_string());
-                        ui.weak(vault);
+                        ui.label(RichText::new(vault).size(10.5).color(theme::TEXT_MUTED));
                     } else {
-                        ui.weak(self.status.clone());
+                        ui.label(
+                            RichText::new(self.status.clone())
+                                .size(10.5)
+                                .color(theme::TEXT_MUTED),
+                        );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(tab) = self.tabs.get(self.active) {
                             let words = tab.text.split_whitespace().count();
                             let chars = tab.text.chars().count();
-                            ui.weak(format!("{words} words · {chars} chars"));
+                            ui.label(
+                                RichText::new(format!("{words} words  {chars} characters"))
+                                    .size(10.5)
+                                    .color(theme::TEXT_MUTED),
+                            );
                         }
                     });
                 });
@@ -10856,41 +11221,56 @@ fn tag_tree_row(
     ui: &mut egui::Ui,
     node: &index::TagNode,
     depth: usize,
+    expanded: &mut HashSet<String>,
     clicked: &mut Option<String>,
 ) {
-    let color = ui.visuals().hyperlink_color;
-    ui.horizontal(|ui| {
-        ui.add_space(depth as f32 * 12.0);
+    let row_h = 20.0;
+    let width = ui.available_width().max(40.0);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, row_h), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 3.0, theme::WIDGET.linear_multiply(0.45));
+    }
+    let open = expanded.contains(&node.full);
+    let indent = depth as f32 * 12.0;
+    let chev_x = rect.min.x + indent + 4.0;
+    if !node.children.is_empty() {
+        ui.painter().text(
+            egui::pos2(chev_x, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            if open { "▾" } else { "▸" },
+            egui::FontId::proportional(9.0),
+            theme::TEXT_MUTED,
+        );
+    }
+    ui.painter().text(
+        egui::pos2(chev_x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        &node.name,
+        egui::FontId::proportional(11.5),
+        theme::TEXT,
+    );
+    ui.painter().text(
+        egui::pos2(rect.max.x - 4.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        node.count.to_string(),
+        egui::FontId::proportional(10.0),
+        theme::TEXT_MUTED,
+    );
+    if resp.clicked() {
         if node.children.is_empty() {
-            let resp = theme::tag_pill(ui, &format!("{}  {}", node.name, node.count), false);
-            if resp.interact(egui::Sense::click()).clicked() {
-                *clicked = Some(node.full.clone());
-            }
+            *clicked = Some(node.full.clone());
+        } else if open {
+            expanded.remove(&node.full);
         } else {
-            egui::CollapsingHeader::new(
-                RichText::new(format!("{}  ({})", node.name, node.count)).small(),
-            )
-            .id_source(("tagtree", &node.full))
-            .show(ui, |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new(format!("#{} — all {}", node.full, node.count))
-                                .small()
-                                .color(color),
-                        )
-                        .frame(false),
-                    )
-                    .clicked()
-                {
-                    *clicked = Some(node.full.clone());
-                }
-                for child in &node.children {
-                    tag_tree_row(ui, child, depth + 1, clicked);
-                }
-            });
+            expanded.insert(node.full.clone());
         }
-    });
+    }
+    if open {
+        for child in &node.children {
+            tag_tree_row(ui, child, depth + 1, expanded, clicked);
+        }
+    }
 }
 
 /// Actions collected while drawing the tree, applied by the caller afterwards.
@@ -10919,6 +11299,7 @@ fn show_tree(
     selected: Option<&Path>,
     expanded: &mut HashSet<PathBuf>,
     titles: &BTreeMap<PathBuf, String>,
+    excerpt: Option<&[String]>,
     actions: &mut TreeActions,
 ) {
     let weak = ui.visuals().weak_text_color();
@@ -10951,7 +11332,7 @@ fn show_tree(
         }
         if is_open {
             ui.indent(dir.rel.clone(), |ui| {
-                show_tree(ui, dir, selected, expanded, titles, actions);
+                show_tree(ui, dir, selected, expanded, titles, excerpt, actions);
             });
         }
     }
@@ -10973,28 +11354,44 @@ fn show_tree(
                 .get(&file.path)
                 .cloned()
                 .unwrap_or_else(|| file.title.clone());
-            let label_rt = RichText::new(label).size(12.5).color(theme::TEXT);
-            let resp = if is_selected {
-                egui::Frame::none()
-                    .fill(theme::ACCENT.linear_multiply(0.16))
-                    .rounding(egui::Rounding::same(4.0))
-                    .inner_margin(egui::Margin::symmetric(5.0, 1.0))
-                    .show(ui, |ui| ui.label(label_rt))
-                    .response
-                    .interact(egui::Sense::click())
-            } else {
-                ui.selectable_label(false, label_rt)
-            };
             if is_selected {
-                let r = resp.rect;
+                // Selected note: a rounded block with the title and a preview of
+                // the note's opening lines (LYT / file-explorer style).
+                let block = egui::Frame::none()
+                    .fill(theme::WIDGET.linear_multiply(0.55))
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+                    .rounding(egui::Rounding::same(5.0))
+                    .inner_margin(egui::Margin::symmetric(7.0, 5.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(
+                            RichText::new(label.clone())
+                                .size(12.5)
+                                .strong()
+                                .color(theme::TEXT),
+                        );
+                        if let Some(lines) = excerpt {
+                            for l in lines {
+                                ui.label(RichText::new(l).size(10.0).color(theme::TEXT_MUTED));
+                            }
+                        }
+                    })
+                    .response;
                 ui.painter().rect_filled(
-                    egui::Rect::from_min_size(r.min, egui::vec2(2.0, r.height())),
-                    1.0,
-                    theme::ACCENT,
+                    egui::Rect::from_min_size(block.rect.min, egui::vec2(3.0, block.rect.height())),
+                    1.5,
+                    theme::GOLD,
                 );
-            }
-            if resp.clicked() {
-                open = true;
+                if block.interact(egui::Sense::click()).clicked() {
+                    open = true;
+                }
+            } else {
+                if ui
+                    .selectable_label(false, RichText::new(label).size(12.5).color(theme::TEXT))
+                    .clicked()
+                {
+                    open = true;
+                }
             }
             if hovered {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
