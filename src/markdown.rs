@@ -8,6 +8,63 @@
 
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 
+thread_local! {
+    /// Equation numbers and `\label` targets for the note being rendered.
+    static EQ_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static EQ_LABELS: std::cell::RefCell<std::collections::HashMap<String, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Reset per-note equation state (called at the top level of `render`).
+fn reset_equations() {
+    EQ_COUNTER.with(|c| c.set(0));
+    EQ_LABELS.with(|m| m.borrow_mut().clear());
+}
+
+fn next_equation() -> usize {
+    EQ_COUNTER.with(|c| {
+        let n = c.get() + 1;
+        c.set(n);
+        n
+    })
+}
+
+/// Pull `\label{name}` out of a math block and record it under `number`.
+fn take_label(tex: &mut String, number: usize) {
+    while let Some(start) = tex.find("\\label{") {
+        if let Some(end) = tex[start..].find('}') {
+            let name = tex[start + 7..start + end].to_string();
+            EQ_LABELS.with(|m| m.borrow_mut().insert(name, number));
+            tex.replace_range(start..start + end + 1, "");
+        } else {
+            break;
+        }
+    }
+}
+
+/// Replace `\ref{name}` with the recorded equation number.
+fn expand_refs(tex: &mut String) {
+    while let Some(start) = tex.find("\\ref{") {
+        if let Some(end) = tex[start..].find('}') {
+            let name = tex[start + 5..start + end].to_string();
+            let n = EQ_LABELS.with(|m| m.borrow().get(&name).copied());
+            let repl = n.map(|n| n.to_string()).unwrap_or_else(|| "??".into());
+            tex.replace_range(start..start + end + 1, &repl);
+        } else {
+            break;
+        }
+    }
+}
+
+/// Extract an explicit `\tag{...}` (returns it and removes it from `tex`).
+fn take_tag(tex: &mut String) -> Option<String> {
+    let start = tex.find("\\tag{")?;
+    let end = tex[start..].find('}')?;
+    let tag = tex[start + 5..start + end].to_string();
+    tex.replace_range(start..start + end + 1, "");
+    Some(tag)
+}
+
 /// A clickable thing the preview produced this frame.
 pub enum LinkClick {
     /// A `[[wikilink]]` target (to be resolved to a note).
@@ -284,6 +341,9 @@ pub fn render(
     fence: &dyn Fn(&mut egui::Ui, &str, &str) -> bool,
     depth: usize,
 ) -> Vec<LinkClick> {
+    if depth == 0 {
+        reset_equations();
+    }
     let mut clicked: Vec<LinkClick> = Vec::new();
     let lines: Vec<&str> = text.split('\n').collect();
     let mut i = 0;
@@ -307,6 +367,82 @@ pub fn render(
             if !fence(ui, &lang, &block) {
                 code_block(ui, &block, base_size);
             }
+            continue;
+        }
+
+        // LaTeX display environments: \begin{equation} … \end{equation}
+        if trimmed.starts_with("\\begin{") {
+            let env_name: String = trimmed
+                .trim_start_matches("\\begin{")
+                .split('}')
+                .next()
+                .unwrap_or("")
+                .to_string();
+            let numbered_env = matches!(
+                env_name.as_str(),
+                "equation"
+                    | "equation*"
+                    | "align"
+                    | "align*"
+                    | "gather"
+                    | "gather*"
+                    | "multline"
+                    | "multline*"
+                    | "eqnarray"
+                    | "eqnarray*"
+            );
+            if numbered_env {
+                let unnumbered = env_name.ends_with('*');
+                let mut tex = String::new();
+                let rest = trimmed.split_once('}').map(|(_, r)| r.trim()).unwrap_or("");
+                if !rest.is_empty() {
+                    tex.push_str(rest);
+                }
+                i += 1;
+                let end_marker = format!("\\end{{{env_name}}}");
+                while i < lines.len() && !lines[i].contains(&end_marker) {
+                    tex.push('\n');
+                    tex.push_str(lines[i]);
+                    i += 1;
+                }
+                if i < lines.len() {
+                    let before = lines[i].split(&end_marker).next().unwrap_or("");
+                    if !before.trim().is_empty() {
+                        tex.push('\n');
+                        tex.push_str(before.trim());
+                    }
+                    i += 1;
+                }
+                let tag = take_tag(&mut tex);
+                let number = if let Some(t) = tag {
+                    Some(t)
+                } else if unnumbered {
+                    None
+                } else {
+                    let n = next_equation();
+                    take_label(&mut tex, n);
+                    Some(n.to_string())
+                };
+                expand_refs(&mut tex);
+                display_math_tagged(ui, &tex, base_size, number.as_deref());
+                continue;
+            }
+        }
+        if trimmed.starts_with("\\[") {
+            let mut tex = trimmed.trim_start_matches("\\[").to_string();
+            i += 1;
+            while i < lines.len() && !lines[i].contains("\\]") {
+                tex.push('\n');
+                tex.push_str(lines[i]);
+                i += 1;
+            }
+            if i < lines.len() {
+                let before = lines[i].split("\\]").next().unwrap_or("");
+                tex.push_str(before);
+                i += 1;
+            }
+            expand_refs(&mut tex);
+            display_math_tagged(ui, &tex, base_size, None);
             continue;
         }
 
@@ -336,7 +472,18 @@ pub fn render(
                     i += 1;
                 }
             }
-            display_math(ui, &tex, base_size);
+            let tag = take_tag(&mut tex);
+            let number = match tag {
+                Some(t) => Some(t),
+                None if tex.contains("\\label{") => {
+                    let n = next_equation();
+                    take_label(&mut tex, n);
+                    Some(n.to_string())
+                }
+                None => None,
+            };
+            expand_refs(&mut tex);
+            display_math_tagged(ui, &tex, base_size, number.as_deref());
             continue;
         }
 
@@ -592,12 +739,31 @@ fn is_media_target(target: &str) -> bool {
     )
 }
 
-fn display_math(ui: &mut egui::Ui, tex: &str, base_size: f32) {
-    ui.add_space(2.0);
-    ui.vertical_centered(|ui| {
-        draw_math(ui, tex.trim(), base_size * 1.25, true);
-    });
-    ui.add_space(2.0);
+/// Draw centred display math with an optional right-aligned equation number.
+fn display_math_tagged(ui: &mut egui::Ui, tex: &str, base_size: f32, number: Option<&str>) {
+    ui.add_space(3.0);
+    let size = base_size * 1.25;
+    let layout = crate::math::layout_math(ui, tex.trim(), size, true);
+    let h = (layout.ascent + layout.descent).max(size);
+    let width = ui.available_width().max(1.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, h), Sense::hover());
+    let x = rect.min.x + ((width - layout.width) / 2.0).max(0.0);
+    crate::math::paint_math(
+        ui.painter(),
+        egui::Rect::from_min_size(egui::pos2(x, rect.min.y), Vec2::new(layout.width, h)),
+        &layout,
+        ui.visuals().text_color(),
+    );
+    if let Some(n) = number {
+        ui.painter().text(
+            egui::pos2(rect.max.x - 4.0, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            format!("({n})"),
+            egui::FontId::proportional(size * 0.85),
+            ui.visuals().weak_text_color(),
+        );
+    }
+    ui.add_space(3.0);
 }
 
 fn code_block(ui: &mut egui::Ui, block: &str, base_size: f32) {

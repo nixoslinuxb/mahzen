@@ -337,6 +337,12 @@ enum Command {
     TagManager,
     EditTable,
     CopyBlockRef,
+    Settings,
+    RandomNote,
+    ToggleBookmark,
+    NoteComposer,
+    VoiceNote,
+    ToggleLinkedPane,
     TogglePanel,
     ToggleGraph,
     Lock,
@@ -345,7 +351,7 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 31] = [
+    const ALL: [Command; 37] = [
         Command::NewNote,
         Command::NewSubnote,
         Command::OpenVault,
@@ -372,6 +378,12 @@ impl Command {
         Command::TagManager,
         Command::EditTable,
         Command::CopyBlockRef,
+        Command::Settings,
+        Command::RandomNote,
+        Command::ToggleBookmark,
+        Command::NoteComposer,
+        Command::VoiceNote,
+        Command::ToggleLinkedPane,
         Command::TogglePanel,
         Command::ToggleGraph,
         Command::Lock,
@@ -407,6 +419,12 @@ impl Command {
             Command::TagManager => "Manage tags (rename / merge / delete)",
             Command::EditTable => "Edit table visually",
             Command::CopyBlockRef => "Copy block reference for the current line",
+            Command::Settings => "Settings",
+            Command::RandomNote => "Open a random note",
+            Command::ToggleBookmark => "Bookmark / unbookmark current note",
+            Command::NoteComposer => "Note composer (merge / split)…",
+            Command::VoiceNote => "Record a voice note",
+            Command::ToggleLinkedPane => "Toggle linked second pane",
             Command::TogglePanel => "Toggle side panel",
             Command::ToggleGraph => "Toggle graph view",
             Command::Lock => "Lock the vault",
@@ -443,6 +461,12 @@ impl Command {
             Command::TagManager => Icon::Tag,
             Command::EditTable => Icon::File,
             Command::CopyBlockRef => Icon::Link,
+            Command::Settings => Icon::Edit,
+            Command::RandomNote => Icon::Recent,
+            Command::ToggleBookmark => Icon::Star,
+            Command::NoteComposer => Icon::Split,
+            Command::VoiceNote => Icon::Mic,
+            Command::ToggleLinkedPane => Icon::PanelRight,
             Command::TogglePanel => Icon::PanelRight,
             Command::ToggleGraph => Icon::Graph,
             Command::Lock => Icon::Lock,
@@ -623,6 +647,18 @@ pub struct EncryptedNoteApp {
     column_mode: usize,
     /// Cached spell-check results (hash of buffer, misspelled words).
     spell_cache: (u64, HashSet<String>),
+    /// Settings window.
+    settings_open: bool,
+    /// Bookmarked notes (mirrored into `config.bookmarks`).
+    bookmarks: Vec<PathBuf>,
+    /// Note composer state.
+    composer_open: bool,
+    /// 0 = merge into another note, 1 = split at the caret.
+    composer_mode: usize,
+    composer_target: String,
+    composer_error: Option<String>,
+    /// An in-progress voice recording: (child, file, started-at).
+    voice_recording: Option<(std::process::Child, PathBuf, f64)>,
     /// Visual table editor state.
     table_edit_open: bool,
     table_rows: Vec<Vec<String>>,
@@ -804,6 +840,7 @@ pub struct EncryptedNoteApp {
 impl EncryptedNoteApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let config = Config::load();
+        let initial_bookmarks = config.bookmarks.clone();
         let initial_show_right = config.show_right;
         let initial_window_mode = config.window_mode.clone();
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -870,6 +907,13 @@ impl EncryptedNoteApp {
             column_text: String::new(),
             column_mode: 0,
             spell_cache: (0, HashSet::new()),
+            settings_open: false,
+            bookmarks: initial_bookmarks,
+            composer_open: false,
+            composer_mode: 0,
+            composer_target: String::new(),
+            composer_error: None,
+            voice_recording: None,
             table_edit_open: false,
             table_rows: Vec::new(),
             table_span: None,
@@ -1645,6 +1689,257 @@ impl EncryptedNoteApp {
         self.status = format!("Copied {reference}");
     }
 
+    /// Show `path` in the second pane (opening a tab for it if needed).
+    fn open_in_secondary(&mut self, path: PathBuf) {
+        if let Some(idx) = self.tabs.iter().position(|t| t.path == path) {
+            self.secondary = Some(idx);
+            self.secondary_live_line = 0;
+            return;
+        }
+        let before = self.tabs.len();
+        self.open_note(path);
+        if self.tabs.len() > before {
+            self.secondary = Some(self.tabs.len() - 1);
+            self.secondary_live_line = 0;
+            // Keep the original note active in the first pane.
+            if before > 0 {
+                self.active = 0;
+            }
+        }
+    }
+
+    /// Open a random note from the vault.
+    fn open_random_note(&mut self) {
+        let paths: Vec<PathBuf> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.iter().map(|n| n.path.clone()).collect())
+            .unwrap_or_default();
+        if paths.is_empty() {
+            self.status = "No notes to pick from".into();
+            return;
+        }
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as usize)
+            .unwrap_or(0);
+        let idx = t % paths.len();
+        self.pending_open = Some(paths[idx].clone());
+        self.status = "Random note".into();
+    }
+
+    /// Star / unstar the active note and persist the bookmark list.
+    fn toggle_bookmark(&mut self) {
+        let Some(path) = self.tabs.get(self.active).map(|t| t.path.clone()) else {
+            self.status = "Open a note first".into();
+            return;
+        };
+        if let Some(pos) = self.bookmarks.iter().position(|p| *p == path) {
+            self.bookmarks.remove(pos);
+            self.status = "Bookmark removed".into();
+        } else {
+            self.bookmarks.push(path);
+            self.status = "Note bookmarked".into();
+        }
+        self.config.bookmarks = self.bookmarks.clone();
+        self.config.save();
+    }
+
+    fn open_composer(&mut self) {
+        if self.tabs.is_empty() {
+            self.status = "Open a note first".into();
+            return;
+        }
+        self.composer_open = true;
+        self.composer_mode = 0;
+        self.composer_target.clear();
+        self.composer_error = None;
+    }
+
+    /// Merge the active note into `target` (append + delete), or split the
+    /// active note at the live-preview line into a new note.
+    fn apply_composer(&mut self, ctx: &egui::Context) {
+        let idx = self.active;
+        let Some(tab) = self.tabs.get(idx) else {
+            self.composer_error = Some("Open a note first".into());
+            return;
+        };
+        let source_path = tab.path.clone();
+        let source_text = tab.text.clone();
+        let source_title = tab.title.clone();
+        if self.composer_mode == 0 {
+            // Merge into another note.
+            let target = self.composer_target.trim().to_string();
+            if target.is_empty() {
+                self.composer_error = Some("Enter the note to merge into".into());
+                return;
+            }
+            let Some(dest) = self.index.resolve(&target) else {
+                self.composer_error = Some(format!("No note named '{target}'"));
+                return;
+            };
+            if dest == source_path {
+                self.composer_error = Some("Pick a different note".into());
+                return;
+            }
+            let Some(dest_text) = self.read_note(&dest) else {
+                self.composer_error = Some("Could not read the target note".into());
+                return;
+            };
+            let merged = format!(
+                "{}\n\n---\n\n## Merged from {source_title}\n\n{source_text}\n",
+                dest_text.trim_end()
+            );
+            if let Err(e) = self.write_note(&dest, &merged) {
+                self.composer_error = Some(format!("Write failed: {e}"));
+                return;
+            }
+            // Also update the open buffer if the target is open.
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.path == dest) {
+                t.text = merged;
+            }
+            let _ = fs::remove_file(&source_path);
+            self.tabs.retain(|t| t.path != source_path);
+            if self.active >= self.tabs.len() {
+                self.active = self.tabs.len().saturating_sub(1);
+            }
+            self.composer_open = false;
+            self.refresh_vault();
+            self.rebuild_index();
+            self.status = format!("Merged '{source_title}' into the target note");
+        } else {
+            // Split at the caret's line into a new note.
+            let caret_line = self
+                .current_selection(ctx)
+                .map(|(a, _)| source_text.chars().take(a).filter(|c| *c == '\n').count())
+                .unwrap_or(self.live_line);
+            let lines: Vec<&str> = source_text.split('\n').collect();
+            let at = caret_line.clamp(1, lines.len().saturating_sub(1));
+            let head = lines[..at].join("\n");
+            let tail = lines[at..].join("\n");
+            if tail.trim().is_empty() {
+                self.composer_error = Some("Nothing to split below the caret".into());
+                return;
+            }
+            let name = if self.composer_target.trim().is_empty() {
+                format!("{source_title} 2")
+            } else {
+                self.composer_target.trim().to_string()
+            };
+            let Some(crypto) = self.crypto.as_ref() else {
+                self.composer_error = Some("Vault is locked".into());
+                return;
+            };
+            let contents = crypto.encrypt(&tail);
+            let created = self
+                .vault
+                .as_ref()
+                .and_then(|v| v.create_note(&name, &contents).ok());
+            match created {
+                Some(path) => {
+                    let _ = self.write_note(&source_path, &head);
+                    let tab = &mut self.tabs[idx];
+                    tab.undo.push(source_text.clone());
+                    tab.redo.clear();
+                    tab.text = head;
+                    self.composer_open = false;
+                    self.refresh_vault();
+                    self.rebuild_index();
+                    self.open_note(path);
+                    self.status = "Split note into a new file".into();
+                }
+                None => self.composer_error = Some("Could not create the new note".into()),
+            }
+        }
+    }
+
+    /// Start (or stop) a voice recording saved into the vault's `assets/`.
+    fn toggle_voice_note(&mut self) {
+        if let Some((mut child, path, started)) = self.voice_recording.take() {
+            // Ask ffmpeg to finalise the file, then wait briefly.
+            let _ = std::process::Command::new("kill")
+                .args(["-INT", &child.id().to_string()])
+                .status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(80));
+                    }
+                    _ => {
+                        let _ = child.kill();
+                        break;
+                    }
+                }
+            }
+            if !path.exists() {
+                self.status = "Recording failed (is ffmpeg installed?)".into();
+                return;
+            }
+            let rel = path
+                .strip_prefix(
+                    self.vault
+                        .as_ref()
+                        .map(|v| v.root.as_path())
+                        .unwrap_or(Path::new("")),
+                )
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| path.to_string_lossy().to_string());
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let seconds = now_secs() - started;
+            self.insert_into_active(&format!("![[{rel}]]\n"));
+            self.status = format!("Saved voice note · {name} · {seconds:.0}s");
+            return;
+        }
+        let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
+            self.status = "Open a vault first".into();
+            return;
+        };
+        if self.tabs.is_empty() {
+            self.status = "Open a note first".into();
+            return;
+        }
+        let (y, m, d) = crate::dates::today();
+        let (hh, mm, ss) = crate::dates::now_hms();
+        let assets = root.join("assets");
+        let _ = fs::create_dir_all(&assets);
+        let file = assets.join(format!(
+            "voice-{y:04}{m:02}{d:02}-{hh:02}{mm:02}{ss:02}.ogg"
+        ));
+        let child = std::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "pulse", "-i", "default"])
+            .arg(&file)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        match child {
+            Ok(child) => {
+                self.voice_recording = Some((child, file, now_secs()));
+                self.status = "Recording… run Voice note again to stop".into();
+            }
+            Err(_) => self.status = "Could not start ffmpeg".into(),
+        }
+    }
+
+    /// Append markdown to the active note's buffer (with undo).
+    fn insert_into_active(&mut self, text: &str) {
+        let idx = self.active;
+        let Some(tab) = self.tabs.get_mut(idx) else {
+            return;
+        };
+        tab.undo.push(tab.text.clone());
+        tab.redo.clear();
+        if !tab.text.ends_with('\n') {
+            tab.text.push('\n');
+        }
+        tab.text.push_str(text);
+    }
+
     // ----------------------------------------------------- properties / tags
 
     fn open_property_editor(&mut self, key: Option<String>, value: Option<String>, is_list: bool) {
@@ -2276,6 +2571,20 @@ impl EncryptedNoteApp {
             }
             Command::EditTable => self.open_table_editor(),
             Command::CopyBlockRef => self.copy_block_reference(ctx),
+            Command::Settings => self.settings_open = true,
+            Command::RandomNote => self.open_random_note(),
+            Command::ToggleBookmark => self.toggle_bookmark(),
+            Command::NoteComposer => self.open_composer(),
+            Command::VoiceNote => self.toggle_voice_note(),
+            Command::ToggleLinkedPane => {
+                self.config.linked_pane = !self.config.linked_pane;
+                self.config.save();
+                self.status = if self.config.linked_pane {
+                    "Linked pane on — links open beside".into()
+                } else {
+                    "Linked pane off".into()
+                };
+            }
             Command::TogglePanel => self.show_right = !self.show_right,
             Command::ToggleGraph => self.show_graph = !self.show_graph,
             Command::Lock => self.lock(),
@@ -6926,8 +7235,71 @@ impl EncryptedNoteApp {
                     {
                         self.toggle_passwords();
                     }
+                    let starred = self
+                        .tabs
+                        .get(self.active)
+                        .map(|t| self.bookmarks.contains(&t.path))
+                        .unwrap_or(false);
+                    if icons::button(
+                        ui,
+                        Icon::Star,
+                        16.0,
+                        self.tabs.get(self.active).is_some(),
+                        starred,
+                        if starred {
+                            "Remove bookmark"
+                        } else {
+                            "Bookmark this note"
+                        },
+                    )
+                    .clicked()
+                    {
+                        self.toggle_bookmark();
+                    }
+                    if icons::button(ui, Icon::Edit, 16.0, true, false, "Settings").clicked() {
+                        self.settings_open = true;
+                    }
                 });
                 ui.separator();
+
+                // Bookmarks (starred notes)
+                egui::CollapsingHeader::new(format!("Bookmarks ({})", self.bookmarks.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        if self.bookmarks.is_empty() {
+                            ui.weak("Star a note to bookmark it");
+                        }
+                        let marks = self.bookmarks.clone();
+                        for path in marks {
+                            if !path.exists() {
+                                continue;
+                            }
+                            let title = self.title_of(&path);
+                            let clicked = ui
+                                .horizontal(|ui| {
+                                    icons::icon(ui, Icon::Star, 12.0, theme::ACCENT);
+                                    ui.add(
+                                        egui::Button::new(RichText::new(title).small())
+                                            .frame(false),
+                                    )
+                                    .clicked()
+                                })
+                                .inner;
+                            if clicked {
+                                self.pending_open = Some(path);
+                            }
+                        }
+                        if !self.bookmarks.is_empty()
+                            && ui.small_button("Random bookmark").clicked()
+                        {
+                            let n = self.bookmarks.len();
+                            let t = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.subsec_nanos() as usize)
+                                .unwrap_or(0);
+                            self.pending_open = Some(self.bookmarks[t % n].clone());
+                        }
+                    });
 
                 // Calendar (daily notes)
                 egui::CollapsingHeader::new("Calendar")
@@ -8093,7 +8465,11 @@ impl EncryptedNoteApp {
             });
         for target in wiki {
             if let Some(path) = self.index.resolve(&target) {
-                self.pending_open = Some(path);
+                if pane == 0 && self.config.linked_pane {
+                    self.open_in_secondary(path);
+                } else {
+                    self.pending_open = Some(path);
+                }
             } else {
                 self.status = format!("No note named '{target}'");
             }
@@ -8631,7 +9007,182 @@ impl EncryptedNoteApp {
         }
     }
 
+    /// Application settings (font, editor behaviour, daily notes, window mode).
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
+        if !self.settings_open {
+            return;
+        }
+        let mut open = true;
+        let mut font_changed = false;
+        egui::Window::new("Settings")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(440.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(520.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Editor").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Font size");
+                            font_changed = ui
+                                .add(egui::Slider::new(&mut self.config.font_size, 10.0..=24.0))
+                                .changed();
+                        });
+                        ui.checkbox(
+                            &mut self.config.wysiwyg,
+                            "Conceal markdown while editing (WYSIWYG)",
+                        );
+                        ui.checkbox(&mut self.config.spellcheck, "Spell check");
+                        ui.checkbox(&mut self.config.vim, "Vim mode");
+                        ui.checkbox(
+                            &mut self.config.show_preview,
+                            "Open notes in split view by default",
+                        );
+                        ui.checkbox(&mut self.config.linked_pane, "Linked second pane");
+                        ui.separator();
+                        ui.label(RichText::new("Daily notes").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Folder");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.config.daily_dir)
+                                    .desired_width(160.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Date format");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.config.daily_format)
+                                    .desired_width(160.0)
+                                    .hint_text("YYYY-MM-DD"),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Template");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.config.daily_template)
+                                    .desired_width(160.0)
+                                    .hint_text("Templates/Daily"),
+                            );
+                        });
+                        ui.separator();
+                        ui.label(RichText::new("Templates & window").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Templates folder");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.config.templates_dir)
+                                    .desired_width(160.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Startup window");
+                            for mode in [
+                                WindowMode::Windowed,
+                                WindowMode::Maximized,
+                                WindowMode::Fullscreen,
+                            ] {
+                                let sel = self.window_mode == mode;
+                                if ui.selectable_label(sel, mode.label()).clicked() {
+                                    self.window_mode = mode;
+                                    self.send_window_mode(ctx);
+                                }
+                            }
+                        });
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!(
+                                "Vault: {}",
+                                self.vault
+                                    .as_ref()
+                                    .map(|v| v.root.display().to_string())
+                                    .unwrap_or_else(|| "none".into())
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                    });
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        self.config.window_mode = self.window_mode.as_str().to_string();
+                        self.config.save();
+                        self.status = "Settings saved".into();
+                    }
+                    if ui.button("Close").clicked() {
+                        self.settings_open = false;
+                    }
+                });
+            });
+        if font_changed {
+            theme::apply(ctx, self.config.font_size);
+        }
+        if !open {
+            self.settings_open = false;
+        }
+    }
+
+    /// Note composer: merge the active note into another, or split it in two.
+    fn composer_dialog(&mut self, ctx: &egui::Context) {
+        if !self.composer_open {
+            return;
+        }
+        let mut open = true;
+        let title = self
+            .tabs
+            .get(self.active)
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        egui::Window::new("Note composer")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(400.0)
+            .show(ctx, |ui| {
+                ui.label(RichText::new(format!("Active note: {title}")).small().weak());
+                ui.separator();
+                ui.radio_value(&mut self.composer_mode, 0, "Merge into another note");
+                ui.radio_value(&mut self.composer_mode, 1, "Split below the caret");
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.composer_target)
+                        .hint_text(if self.composer_mode == 0 {
+                            "target note title"
+                        } else {
+                            "new note title (optional)"
+                        })
+                        .desired_width(f32::INFINITY),
+                );
+                if let Some(err) = &self.composer_error {
+                    ui.label(RichText::new(err).color(theme::DANGER).small());
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(if self.composer_mode == 0 {
+                        "The active note's content is appended to the target and the original file is removed."
+                    } else {
+                        "The content below the caret is moved into a new note."
+                    })
+                    .small()
+                    .weak(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Apply").clicked() {
+                        self.apply_composer(ctx);
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.composer_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.composer_open = false;
+        }
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.settings_dialog(ctx);
+        self.composer_dialog(ctx);
         self.table_editor_dialog(ctx);
         self.properties_dialog(ctx);
         self.tag_manager_dialog(ctx);
@@ -9300,6 +9851,13 @@ impl EncryptedNoteApp {
             .frame(frame)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    if let Some((_, _, started)) = &self.voice_recording {
+                        ui.label(
+                            RichText::new(format!("● REC {:.0}s", now_secs() - started))
+                                .color(theme::DANGER)
+                                .small(),
+                        );
+                    }
                     if self.status.is_empty() {
                         let vault = self
                             .vault
@@ -9423,6 +9981,9 @@ impl eframe::App for EncryptedNoteApp {
         if !self.canvas_web_pending.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(400));
         }
+        if self.voice_recording.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         self.poll_full_article();
         self.tick_favicon(ctx);
 
@@ -9448,6 +10009,12 @@ impl eframe::App for EncryptedNoteApp {
     }
 
     fn on_exit(&mut self) {
+        if let Some((mut child, _, _)) = self.voice_recording.take() {
+            let _ = std::process::Command::new("kill")
+                .args(["-INT", &child.id().to_string()])
+                .status();
+            let _ = child.wait();
+        }
         self.save_all();
         self.save_workspace();
         // Persist an open canvas on the way out.
@@ -10008,6 +10575,14 @@ fn extract_reference(body: &str, target: &str) -> String {
         }
     }
     lines[s..end].join("\n")
+}
+
+/// Seconds since the Unix epoch, as `f64`.
+fn now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn vault_file(root: &Path, rel: &str) -> Option<PathBuf> {

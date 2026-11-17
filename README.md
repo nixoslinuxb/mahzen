@@ -246,9 +246,10 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   (`pmatrix`/`bmatrix`/`vmatrix`/`matrix`), `aligned`/`cases`, `\text`,
   accents (`\overline`, `\hat`, `\vec`, `\dot`) and the usual Greek/operator
   symbols are laid out and drawn natively.
-- **More Mermaid, natively** — besides flowcharts, **sequence diagrams** and
-  **pie charts** render without `mmdc`; anything else still falls back to the
-  CLI when installed.
+- **More Mermaid, natively** — besides flowcharts, **sequence diagrams**,
+  **pie charts**, **state diagrams**, **class diagrams**, **ER diagrams**,
+  **gantt**, **user journeys**, **mind maps** and **timelines** render without
+  `mmdc`; anything else still falls back to the CLI when installed.
 - **Visual table editing** — *Edit table* opens a grid editor for the table in
   the note: edit cells, add/remove rows and columns, then write it back.
 - **Query blocks (Dataview/Bases style)** — fenced `query` blocks (triple-backtick + `query`, or `dataview`) run a
@@ -256,10 +257,17 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   or `"Folder"`, `where field op value` (`=`, `!=`, `>`, `<`, `contains`,
   truthiness), `sort field asc|desc` and `limit N`. Fields include
   `file.name`, `file.path`, `file.folder`, `tags`, `aliases`, `todo`, `done`
-  and any frontmatter property.
+  and any frontmatter property. Expressions support `length`, `upper`,
+  `lower`, `contains`, `startswith`, `endswith`, `round`, `default`,
+  `dateformat`, `sum`, `min`, `max` and `expr as "alias"`; `flatten tags` and
+  `group by field` (with `length(rows)`) aggregate rows.
 - **Richer graph** — edges now show **direction arrows**, nodes can be coloured
   by tag via **colour groups** (persisted), and the force layout exposes
   **repulsion**/**attraction** sliders with a recompute button.
+- **LaTeX environments** — `\begin{equation}`/`align`/`gather`/`split`/
+  `multline`/`matrix` environments, `\[ … \]`, automatic **equation
+  numbering**, `\tag{…}`, `\label{…}` + `\ref{…}` cross-references, explicit
+  `\left.`/`\right.` delimiters and a wider symbol set.
 - **Richer canvas cards** — link cards fetch their page **title and
   description** in the background, and **PDF cards** (context menu → *New PDF
   card…*) render a **first-page preview** through `pdftoppm` when available.
@@ -268,13 +276,34 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   `line:>N` / `line:10-20`, `/regex/`, `-` negation and **`OR`** (all other
   terms are ANDed). Find/replace in the current note is covered above.
 
+## Workspace extras
+
+- **Settings window** — palette command *Settings* (or the pencil icon in the
+  top bar) edits font size, concealed markdown, spell check, Vim mode, default
+  split view, linked pane, daily-notes folder/format/template, templates folder
+  and the startup window mode, then saves everything at once.
+- **Bookmarks** — star the active note (*Bookmark / unbookmark current note* or
+  the star icon). The sidebar lists them and can open a **random bookmark**;
+  *Open a random note* picks from the whole vault.
+- **Note composer** — merge the active note into another (content appended, the
+  original file removed) or split it below the caret into a new note.
+- **Voice notes** — *Record a voice note* captures the default PulseAudio input
+  with `ffmpeg` into `<vault>/assets/voice-<timestamp>.ogg`; run the command
+  again to stop, and the embed is inserted into the active note. A red `● REC`
+  timer shows in the status bar.
+- **Linked second pane** — with *Toggle linked second pane*, wikilinks clicked
+  in the first pane open in the second one (Obsidian's linked view).
+
 ### Not implemented (yet)
 
-The markdown/visualisation gap list is closed: real LaTeX, native sequence/pie
-Mermaid, the extra markdown syntaxes, table editing, query blocks, richer graph
-and canvas cards, and the extended search language are all implemented. **Sync**
-remains out of scope by request, and arbitrary third-party Mermaid diagram
-types still fall back to `mmdc`.
+The markdown/visualisation gap list is closed: real LaTeX (with numbered
+equations and cross-references), native Mermaid for flowcharts, sequence, pie,
+state, class, ER, gantt, journey, mindmap and timeline, the extra markdown
+syntaxes, table editing, query blocks with functions/flatten/group-by, richer
+graph and canvas cards, and the extended search language are all implemented.
+**Sync**, **plugin APIs**, and **plain-Markdown export/import** remain out of
+scope by request; arbitrary third-party Mermaid diagram types still fall back
+to `mmdc`.
 
 ## Logo
 

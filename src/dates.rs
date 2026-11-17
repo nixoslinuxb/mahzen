@@ -132,6 +132,38 @@ pub fn format(fmt: &str, y: i32, m: u32, d: u32) -> String {
 }
 
 /// Local time as `(hour, minute, second)`, falling back to UTC.
+/// Re-format an ISO-ish date string (`YYYY-MM-DD`, optionally with a time
+/// suffix) using a moment-style format. `today`/`now` are accepted too.
+pub fn reformat(value: &str, fmt: &str) -> String {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("today") {
+        let (y, m, d) = today();
+        return format(fmt, y, m, d);
+    }
+    if v.eq_ignore_ascii_case("now") {
+        let (y, m, d) = today();
+        return format(fmt, y, m, d);
+    }
+    if let Some((y, m, d)) = parse_iso(v) {
+        return format(fmt, y, m, d);
+    }
+    v.to_string()
+}
+
+/// Parse `YYYY-MM-DD` (with an optional `T…` time suffix).
+pub fn parse_iso(value: &str) -> Option<(i32, u32, u32)> {
+    let date = value.trim().split('T').next()?;
+    let mut it = date.split('-');
+    let y: i32 = it.next()?.trim().parse().ok()?;
+    let m: u32 = it.next()?.trim().parse().ok()?;
+    let d: u32 = it.next()?.split_whitespace().next()?.trim().parse().ok()?;
+    if (1..=12).contains(&m) && (1..=31).contains(&d) {
+        Some((y, m, d))
+    } else {
+        None
+    }
+}
+
 pub fn now_hms() -> (u32, u32, u32) {
     if let Ok(out) = std::process::Command::new("date").arg("+%H %M %S").output() {
         if out.status.success() {

@@ -301,6 +301,27 @@ pub fn render(ui: &mut egui::Ui, src: &str) -> bool {
     if first.starts_with("pie") {
         return render_pie(ui, src);
     }
+    if first.starts_with("statediagram") {
+        return render_state(ui, src);
+    }
+    if first.starts_with("classdiagram") {
+        return render_class(ui, src);
+    }
+    if first.starts_with("erdiagram") {
+        return render_er(ui, src);
+    }
+    if first.starts_with("gantt") {
+        return render_gantt(ui, src);
+    }
+    if first.starts_with("journey") {
+        return render_journey(ui, src);
+    }
+    if first.starts_with("mindmap") {
+        return render_mindmap(ui, src);
+    }
+    if first.starts_with("timeline") {
+        return render_timeline(ui, src);
+    }
     let Some(fc) = parse(src) else {
         return false;
     };
@@ -713,6 +734,864 @@ fn render_pie(ui: &mut egui::Ui, src: &str) -> bool {
     }
     ui.add_space(2.0);
     ui.label(RichText::new("mermaid · pie chart").weak().small());
+    true
+}
+
+// ------------------------------------------------- shared diagram helpers
+
+struct BoxNode {
+    id: String,
+    label: String,
+    body: Vec<String>,
+}
+
+/// Draw a labelled rounded box and return its rectangle.
+#[allow(clippy::too_many_arguments)]
+fn draw_box(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    title: &str,
+    body: &[String],
+    accent: egui::Color32,
+    fill: egui::Color32,
+    text: egui::Color32,
+    weak: egui::Color32,
+) {
+    painter.rect(
+        rect,
+        egui::Rounding::same(5.0),
+        fill,
+        egui::Stroke::new(1.4_f32, accent),
+    );
+    let mut y = rect.min.y + 6.0;
+    painter.text(
+        egui::pos2(rect.min.x + 8.0, y),
+        egui::Align2::LEFT_TOP,
+        title,
+        egui::FontId::proportional(13.0),
+        text,
+    );
+    y += 19.0;
+    if !body.is_empty() {
+        painter.line_segment(
+            [
+                egui::pos2(rect.min.x + 6.0, y - 3.0),
+                egui::pos2(rect.max.x - 6.0, y - 3.0),
+            ],
+            egui::Stroke::new(1.0_f32, accent.linear_multiply(0.35)),
+        );
+        for line in body {
+            if y + 14.0 > rect.max.y - 4.0 {
+                break;
+            }
+            painter.text(
+                egui::pos2(rect.min.x + 10.0, y),
+                egui::Align2::LEFT_TOP,
+                line,
+                egui::FontId::monospace(10.5),
+                weak,
+            );
+            y += 14.0;
+        }
+    }
+}
+
+/// A canvas for a grid-laid-out diagram (state / class / ER).
+struct GridDiagram {
+    nodes: Vec<BoxNode>,
+    /// (from index, to index, label, dashed)
+    links: Vec<(usize, usize, String, bool)>,
+}
+
+impl GridDiagram {
+    fn node_index(&mut self, id: &str) -> usize {
+        if let Some(i) = self.nodes.iter().position(|n| n.id == id) {
+            return i;
+        }
+        self.nodes.push(BoxNode {
+            id: id.to_string(),
+            label: id.to_string(),
+            body: Vec::new(),
+        });
+        self.nodes.len() - 1
+    }
+}
+
+fn render_grid(ui: &mut egui::Ui, d: &GridDiagram, caption: &str) -> bool {
+    if d.nodes.is_empty() {
+        return false;
+    }
+    let cols = ((d.nodes.len() as f32).sqrt().ceil() as usize).clamp(1, 4);
+    let bw = 170.0f32;
+    let gap_x = 70.0f32;
+    let gap_y = 46.0f32;
+    let rows = d.nodes.len().div_ceil(cols);
+    let bh: Vec<f32> = d
+        .nodes
+        .iter()
+        .map(|n| 34.0 + n.body.len() as f32 * 14.0)
+        .collect();
+    let row_h = 110.0f32;
+    let width = cols as f32 * bw + (cols.saturating_sub(1)) as f32 * gap_x + 40.0;
+    let height = rows as f32 * row_h + (rows.saturating_sub(1)) as f32 * gap_y + 40.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let accent = ui.visuals().hyperlink_color;
+    let fill = ui.visuals().faint_bg_color;
+    let text = ui.visuals().text_color();
+    let weak = ui.visuals().weak_text_color();
+    let pos = |i: usize| -> egui::Rect {
+        let r = i / cols;
+        let c = i % cols;
+        let x = rect.min.x + 20.0 + c as f32 * (bw + gap_x);
+        let y = rect.min.y + 20.0 + r as f32 * (row_h + gap_y) + (row_h - bh[i]) / 2.0;
+        egui::Rect::from_min_size(egui::pos2(x, y), Vec2::new(bw, bh[i]))
+    };
+    for (a, b, label, dashed) in &d.links {
+        let (ra, rb) = (pos(*a), pos(*b));
+        let pa = ra.center();
+        let pb = rb.center();
+        let stroke = egui::Stroke::new(1.4_f32, accent.linear_multiply(0.75));
+        if *dashed {
+            draw_dashed(&painter, pa, pb, stroke);
+        } else {
+            painter.line_segment([pa, pb], stroke);
+        }
+        let dirv = (pb - pa).normalized();
+        let perp = Vec2::new(-dirv.y, dirv.x);
+        let base = pb - dirv * ((rb.size().length() / 2.0) + 2.0).min(70.0);
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                base,
+                base - dirv * 9.0 + perp * 4.5,
+                base - dirv * 9.0 - perp * 4.5,
+            ],
+            accent,
+            egui::Stroke::NONE,
+        ));
+        if !label.is_empty() {
+            let mid = pa + (pb - pa) * 0.5;
+            painter.text(
+                mid,
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(11.0),
+                weak,
+            );
+        }
+    }
+    for (i, n) in d.nodes.iter().enumerate() {
+        draw_box(
+            &painter,
+            pos(i),
+            &n.label,
+            &n.body,
+            accent,
+            fill,
+            text,
+            weak,
+        );
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new(caption).weak().small());
+    true
+}
+
+// -------------------------------------------------------- state diagram
+
+fn render_state(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut d = GridDiagram {
+        nodes: Vec::new(),
+        links: Vec::new(),
+    };
+    let mut seen_header = false;
+    let mut aliases: Vec<(String, String)> = Vec::new();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.to_ascii_lowercase().starts_with("statediagram") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("state ") {
+            // state "Long name" as S
+            if let Some((left, right)) = rest.split_once(" as ") {
+                let name = left.trim().trim_matches('"').to_string();
+                aliases.push((right.trim().to_string(), name));
+            }
+            continue;
+        }
+        if line == "}" || line.ends_with('{') {
+            continue;
+        }
+        if let Some((left, label)) = line.split_once(':') {
+            // State description: S : text
+            let id = left.trim();
+            if !id.contains("-->") && !id.contains("->") {
+                let i = d.node_index(id);
+                d.nodes[i].body.push(label.trim().to_string());
+                continue;
+            }
+        }
+        for arrow in ["-->", "->"] {
+            if let Some((a, b)) = line.split_once(arrow) {
+                let rhs = b.trim();
+                let (to, label) = match rhs.split_once(':') {
+                    Some((t, l)) => (t.trim(), l.trim().to_string()),
+                    None => (rhs, String::new()),
+                };
+                let from_id = normalize_state(a.trim());
+                let to_id = normalize_state(to);
+                let ia = d.node_index(&from_id);
+                let ib = d.node_index(&to_id);
+                d.links.push((ia, ib, label, false));
+                break;
+            }
+        }
+    }
+    for (id, label) in aliases {
+        if let Some(i) = d.nodes.iter().position(|n| n.id == id) {
+            d.nodes[i].label = label;
+        }
+    }
+    if !seen_header {
+        return false;
+    }
+    render_grid(ui, &d, "mermaid · state diagram")
+}
+
+fn normalize_state(s: &str) -> String {
+    let s = s.trim().trim_matches('"');
+    if s == "[*]" {
+        "•".to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+// -------------------------------------------------------- class diagram
+
+fn render_class(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut d = GridDiagram {
+        nodes: Vec::new(),
+        links: Vec::new(),
+    };
+    let mut seen_header = false;
+    let mut in_body: Option<usize> = None;
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.to_ascii_lowercase().starts_with("classdiagram") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if let Some(idx) = in_body {
+            if line == "}" {
+                in_body = None;
+            } else {
+                d.nodes[idx].body.push(line.to_string());
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("class ") {
+            let mut name = rest.trim().to_string();
+            if let Some(stripped) = name.strip_suffix('{') {
+                name = stripped.trim().to_string();
+            }
+            let i = d.node_index(&name);
+            if rest.contains('{') {
+                in_body = Some(i);
+            }
+            continue;
+        }
+        // Relations.
+        for rel in ["<|--", "*--", "o--", "-->", "<--", "..>", "..|>", "--"] {
+            if let Some((a, b)) = line.split_once(rel) {
+                let (to, label) = match b.split_once(':') {
+                    Some((t, l)) => (t.trim(), l.trim().to_string()),
+                    None => (b.trim(), String::new()),
+                };
+                let ia = d.node_index(a.trim());
+                let ib = d.node_index(to);
+                d.links.push((ia, ib, label, rel.starts_with("..")));
+                break;
+            }
+        }
+    }
+    if !seen_header {
+        return false;
+    }
+    render_grid(ui, &d, "mermaid · class diagram")
+}
+
+// ----------------------------------------------------------- ER diagram
+
+fn render_er(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut d = GridDiagram {
+        nodes: Vec::new(),
+        links: Vec::new(),
+    };
+    let mut seen_header = false;
+    let mut in_body: Option<usize> = None;
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.to_ascii_lowercase().starts_with("erdiagram") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if let Some(idx) = in_body {
+            if line == "}" {
+                in_body = None;
+            } else {
+                d.nodes[idx].body.push(line.to_string());
+            }
+            continue;
+        }
+        if line.ends_with('{') {
+            let name = line.trim_end_matches('{').trim().to_string();
+            let i = d.node_index(&name);
+            in_body = Some(i);
+            continue;
+        }
+        // CUSTOMER ||--o{ ORDER : places
+        if let Some((left, label)) = line.split_once(':') {
+            for card in ["||--o{", "||--|{", "}o--||", "}|--||", "||--||", "}o--o{"] {
+                if let Some((a, b)) = left.split_once(card) {
+                    let ia = d.node_index(a.trim());
+                    let ib = d.node_index(b.trim());
+                    d.links.push((ia, ib, label.trim().to_string(), false));
+                    break;
+                }
+            }
+        }
+    }
+    if !seen_header {
+        return false;
+    }
+    render_grid(ui, &d, "mermaid · ER diagram")
+}
+
+// --------------------------------------------------------------- gantt
+
+fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
+    let mut it = s.trim().split('-');
+    let y = it.next()?.parse().ok()?;
+    let m = it.next()?.parse().ok()?;
+    let d = it.next()?.split('T').next()?.parse().ok()?;
+    Some((y, m, d))
+}
+
+fn day_number(y: i32, m: u32, d: u32) -> i64 {
+    // Days since an arbitrary epoch (civil-from-days algorithm).
+    let y = if m <= 2 { y - 1 } else { y } as i64;
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = ((m + 9) % 12) as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe
+}
+
+struct GanttTask {
+    name: String,
+    section: String,
+    start: i64,
+    end: i64,
+    done: bool,
+}
+
+fn render_gantt(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut tasks: Vec<GanttTask> = Vec::new();
+    let mut section = String::new();
+    let mut seen_header = false;
+    let mut ids: Vec<(String, i64, i64)> = Vec::new();
+    let mut title = String::new();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.eq_ignore_ascii_case("gantt") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if let Some(t) = line.strip_prefix("title ") {
+            title = t.trim().to_string();
+            continue;
+        }
+        if line.starts_with("dateFormat")
+            || line.starts_with("axisFormat")
+            || line.starts_with("excludes")
+        {
+            continue;
+        }
+        if let Some(s) = line.strip_prefix("section ") {
+            section = s.trim().to_string();
+            continue;
+        }
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let parts: Vec<&str> = rest.split(',').map(str::trim).collect();
+        let mut done = false;
+        let mut start: Option<i64> = None;
+        let mut end: Option<i64> = None;
+        let mut last_id = String::new();
+        for tok in &parts {
+            let lt = tok.to_ascii_lowercase();
+            if lt == "done" || lt == "active" || lt == "crit" || lt == "milestone" {
+                done = done || lt == "done";
+                continue;
+            }
+            if let Some(after) = lt.strip_prefix("after ") {
+                if let Some((_, _s, e)) = ids.iter().find(|(id, _, _)| id == after) {
+                    start = Some(*e);
+                }
+                continue;
+            }
+            if let Some((y, m, d)) = parse_date(tok) {
+                let n = day_number(y, m, d);
+                if start.is_none() {
+                    start = Some(n);
+                } else {
+                    end = Some(n);
+                }
+                continue;
+            }
+            if let Some(days) = lt.strip_suffix('d').and_then(|n| n.parse::<i64>().ok()) {
+                if let (Some(st), None) = (start, end) {
+                    end = Some(st + days);
+                }
+                continue;
+            }
+            if let Some(weeks) = lt.strip_suffix('w').and_then(|n| n.parse::<i64>().ok()) {
+                if let (Some(st), None) = (start, end) {
+                    end = Some(st + weeks * 7);
+                }
+                continue;
+            }
+            if lt.chars().all(|c| c.is_ascii_alphanumeric()) && !lt.is_empty() {
+                last_id = tok.to_string();
+            }
+        }
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or(start + 1).max(start + 1);
+        if !last_id.is_empty() {
+            ids.push((last_id, start, end));
+        }
+        tasks.push(GanttTask {
+            name: name.trim().to_string(),
+            section: section.clone(),
+            start,
+            end,
+            done,
+        });
+    }
+    if !seen_header || tasks.is_empty() {
+        return false;
+    }
+    let min = tasks.iter().map(|t| t.start).min().unwrap_or(0);
+    let max = tasks.iter().map(|t| t.end).max().unwrap_or(min + 1);
+    let span = (max - min).max(1) as f32;
+    let label_w = 170.0f32;
+    let chart_w = 520.0f32;
+    let row_h = 26.0f32;
+    let header_h = if title.is_empty() { 26.0 } else { 44.0 };
+    let height = header_h + tasks.len() as f32 * row_h + 24.0;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(label_w + chart_w + 30.0, height),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter_at(rect);
+    let accent = ui.visuals().hyperlink_color;
+    let fill = ui.visuals().faint_bg_color;
+    let text = ui.visuals().text_color();
+    let weak = ui.visuals().weak_text_color();
+    let chart_x = rect.min.x + label_w;
+    if !title.is_empty() {
+        painter.text(
+            egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
+            egui::Align2::LEFT_TOP,
+            &title,
+            egui::FontId::proportional(14.0),
+            text,
+        );
+    }
+    // Week grid lines.
+    let days = (max - min) as f32;
+    let mut gx = 0.0;
+    while gx <= days {
+        let x = chart_x + gx / span * chart_w;
+        painter.line_segment(
+            [
+                egui::pos2(x, rect.min.y + header_h - 10.0),
+                egui::pos2(x, rect.max.y - 8.0),
+            ],
+            egui::Stroke::new(1.0_f32, accent.linear_multiply(0.18)),
+        );
+        painter.text(
+            egui::pos2(x + 2.0, rect.min.y + header_h - 22.0),
+            egui::Align2::LEFT_TOP,
+            format!("{}d", gx as i64),
+            egui::FontId::proportional(9.0),
+            weak,
+        );
+        gx += 7.0;
+    }
+    let mut y = rect.min.y + header_h;
+    let mut last_section = String::new();
+    for t in &tasks {
+        if t.section != last_section && !t.section.is_empty() {
+            painter.text(
+                egui::pos2(rect.min.x + 2.0, y + 3.0),
+                egui::Align2::LEFT_TOP,
+                &t.section,
+                egui::FontId::proportional(11.0),
+                accent,
+            );
+            last_section = t.section.clone();
+        }
+        painter.text(
+            egui::pos2(rect.min.x + 10.0, y + 5.0),
+            egui::Align2::LEFT_TOP,
+            &t.name,
+            egui::FontId::proportional(11.0),
+            text,
+        );
+        let x1 = chart_x + (t.start - min) as f32 / span * chart_w;
+        let x2 = chart_x + (t.end - min) as f32 / span * chart_w;
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(x1, y + 4.0),
+            Vec2::new((x2 - x1).max(3.0), row_h - 10.0),
+        );
+        painter.rect_filled(bar, egui::Rounding::same(3.0), fill);
+        let fillw = if t.done {
+            bar.width()
+        } else {
+            bar.width() * 0.55
+        };
+        painter.rect_filled(
+            egui::Rect::from_min_size(bar.min, Vec2::new(fillw, bar.height())),
+            egui::Rounding::same(3.0),
+            accent.linear_multiply(if t.done { 0.9 } else { 0.55 }),
+        );
+        y += row_h;
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new("mermaid · gantt").weak().small());
+    true
+}
+
+// ------------------------------------------------------------- journey
+
+fn render_journey(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut rows: Vec<(String, String, u32)> = Vec::new();
+    let mut section = String::new();
+    let mut seen_header = false;
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.eq_ignore_ascii_case("journey") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if line.starts_with("title") {
+            continue;
+        }
+        if let Some(s) = line.strip_prefix("section ") {
+            section = s.trim().to_string();
+            continue;
+        }
+        let parts: Vec<&str> = line.split(':').map(str::trim).collect();
+        if parts.len() >= 2 {
+            let score = parts[1].parse::<u32>().unwrap_or(3).clamp(1, 5);
+            rows.push((section.clone(), parts[0].to_string(), score));
+        }
+    }
+    if !seen_header || rows.is_empty() {
+        return false;
+    }
+    let row_h = 30.0f32;
+    let height = rows.len() as f32 * row_h + 20.0;
+    let width = ui.available_width().clamp(320.0, 720.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let accent = ui.visuals().hyperlink_color;
+    let weak = ui.visuals().weak_text_color();
+    let text = ui.visuals().text_color();
+    let colors = [
+        egui::Color32::from_rgb(0xd0, 0x5f, 0x5f),
+        egui::Color32::from_rgb(0xe0, 0x8c, 0x4f),
+        egui::Color32::from_rgb(0xc8, 0xb8, 0x4f),
+        egui::Color32::from_rgb(0x7d, 0xdc, 0x8a),
+        egui::Color32::from_rgb(0x4f, 0xc1, 0x9a),
+    ];
+    let label_w = 180.0f32;
+    let mut last_section = String::new();
+    let mut y = rect.min.y + 10.0;
+    for (sec, name, score) in &rows {
+        if *sec != last_section && !sec.is_empty() {
+            painter.text(
+                egui::pos2(rect.min.x, y),
+                egui::Align2::LEFT_TOP,
+                sec,
+                egui::FontId::proportional(11.0),
+                accent,
+            );
+            last_section = sec.clone();
+        }
+        painter.text(
+            egui::pos2(rect.min.x + 8.0, y + 6.0),
+            egui::Align2::LEFT_TOP,
+            name,
+            egui::FontId::proportional(11.5),
+            text,
+        );
+        let bar_x = rect.min.x + label_w;
+        let bar_w = width - label_w - 40.0;
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, y + 5.0), Vec2::new(bar_w, 14.0)),
+            egui::Rounding::same(7.0),
+            weak.gamma_multiply(0.15),
+        );
+        let w = bar_w * (*score as f32 / 5.0);
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bar_x, y + 5.0), Vec2::new(w, 14.0)),
+            egui::Rounding::same(7.0),
+            colors[(*score as usize - 1).min(4)],
+        );
+        y += row_h;
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new("mermaid · user journey").weak().small());
+    true
+}
+
+// ------------------------------------------------------------- mindmap
+
+#[derive(Default)]
+struct MindNode {
+    label: String,
+    children: Vec<MindNode>,
+}
+
+fn render_mindmap(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut root = MindNode::default();
+    let mut seen_header = false;
+    // Safe insertion without raw pointers: build path indices.
+    let mut path: Vec<usize> = Vec::new();
+    let mut depths: Vec<usize> = Vec::new();
+    for raw in src.lines() {
+        if raw.trim().is_empty() || raw.trim_start().starts_with("%%") {
+            continue;
+        }
+        let indent = raw.len() - raw.trim_start().len();
+        let label = raw.trim().to_string();
+        if !seen_header {
+            if label.eq_ignore_ascii_case("mindmap") {
+                seen_header = true;
+            }
+            continue;
+        }
+        let label = label
+            .trim_start_matches("root")
+            .trim_matches(|c| c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}')
+            .trim()
+            .to_string();
+        if path.is_empty() {
+            root.label = label;
+            depths.push(indent);
+            continue;
+        }
+        // Find the level this node belongs to.
+        while let (Some(&last_depth), Some(_)) = (depths.last(), path.last()) {
+            if indent > last_depth {
+                break;
+            }
+            depths.pop();
+            path.pop();
+        }
+        depths.push(indent);
+        // Walk to the parent and push a child.
+        let mut node = &mut root;
+        for &i in &path {
+            node = &mut node.children[i];
+        }
+        node.children.push(MindNode {
+            label,
+            children: Vec::new(),
+        });
+        let child_idx = node.children.len() - 1;
+        path.push(child_idx);
+    }
+    if !seen_header || root.label.is_empty() {
+        return false;
+    }
+    let size = Vec2::new(ui.available_width().clamp(360.0, 760.0), 360.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let accent = ui.visuals().hyperlink_color;
+    let text = ui.visuals().text_color();
+    let center = rect.center();
+    // Count leaf sectors to assign angles proportional to subtree size.
+    fn count(n: &MindNode) -> usize {
+        if n.children.is_empty() {
+            1
+        } else {
+            n.children.iter().map(count).sum()
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn draw(
+        painter: &egui::Painter,
+        node: &MindNode,
+        center: egui::Pos2,
+        radius: f32,
+        start: f32,
+        end: f32,
+        depth: usize,
+        accent: egui::Color32,
+        text: egui::Color32,
+    ) {
+        let is_root = depth == 0;
+        let font = egui::FontId::proportional(if is_root { 14.0 } else { 11.5 });
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            &node.label,
+            font,
+            if is_root { accent } else { text },
+        );
+        if node.children.is_empty() {
+            return;
+        }
+        let total = node.children.iter().map(count).sum::<usize>().max(1) as f32;
+        let mut a = start;
+        for child in &node.children {
+            let share = count(child) as f32 / total;
+            let a2 = a + (end - start) * share;
+            let mid = (a + a2) / 2.0;
+            let r2 = radius + 78.0;
+            let pos = center + Vec2::new(mid.cos(), mid.sin()) * r2;
+            painter.line_segment(
+                [center, pos],
+                egui::Stroke::new(1.2_f32, accent.linear_multiply(0.45)),
+            );
+            draw(painter, child, pos, r2, a, a2, depth + 1, accent, text);
+            a = a2;
+        }
+    }
+    draw(
+        &painter,
+        &root,
+        center,
+        0.0,
+        -std::f32::consts::FRAC_PI_2,
+        1.5 * std::f32::consts::PI,
+        0,
+        accent,
+        text,
+    );
+    ui.add_space(2.0);
+    ui.label(RichText::new("mermaid · mindmap").weak().small());
+    true
+}
+
+// ------------------------------------------------------------ timeline
+
+fn render_timeline(ui: &mut egui::Ui, src: &str) -> bool {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut seen_header = false;
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with("%%") {
+            continue;
+        }
+        if !seen_header {
+            if line.eq_ignore_ascii_case("timeline") {
+                seen_header = true;
+            }
+            continue;
+        }
+        if line.starts_with("title") || line.starts_with("section") {
+            continue;
+        }
+        if let Some((period, event)) = line.split_once(':') {
+            let event = event.split(':').next().unwrap_or("").trim();
+            if !event.is_empty() {
+                entries.push((period.trim().to_string(), event.to_string()));
+            }
+        }
+    }
+    if !seen_header || entries.is_empty() {
+        return false;
+    }
+    let width = ui.available_width().clamp(360.0, 760.0);
+    let height = 130.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let accent = ui.visuals().hyperlink_color;
+    let text = ui.visuals().text_color();
+    let weak = ui.visuals().weak_text_color();
+    let axis_y = rect.center().y;
+    painter.line_segment(
+        [
+            egui::pos2(rect.min.x + 10.0, axis_y),
+            egui::pos2(rect.max.x - 10.0, axis_y),
+        ],
+        egui::Stroke::new(2.0_f32, accent.linear_multiply(0.6)),
+    );
+    let step = (width - 40.0) / entries.len().max(1) as f32;
+    for (i, (period, event)) in entries.iter().enumerate() {
+        let x = rect.min.x + 20.0 + step * (i as f32 + 0.5);
+        painter.circle_filled(egui::pos2(x, axis_y), 5.0, accent);
+        let above = i % 2 == 0;
+        painter.text(
+            egui::pos2(x, if above { axis_y - 22.0 } else { axis_y + 26.0 }),
+            egui::Align2::CENTER_CENTER,
+            period,
+            egui::FontId::proportional(11.0),
+            weak,
+        );
+        let box_rect = egui::Rect::from_center_size(
+            egui::pos2(x, if above { axis_y - 48.0 } else { axis_y + 52.0 }),
+            Vec2::new(step.min(120.0), 26.0),
+        );
+        painter.rect(
+            box_rect,
+            egui::Rounding::same(4.0),
+            ui.visuals().faint_bg_color,
+            egui::Stroke::new(1.0_f32, accent.linear_multiply(0.5)),
+        );
+        painter.text(
+            box_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            event,
+            egui::FontId::proportional(10.5),
+            text,
+        );
+    }
+    ui.add_space(2.0);
+    ui.label(RichText::new("mermaid · timeline").weak().small());
     true
 }
 

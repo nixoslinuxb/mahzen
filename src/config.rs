@@ -65,6 +65,12 @@ pub struct Config {
     /// Startup window mode: `"fullscreen"`, `"maximized"`, or `"windowed"`.
     #[serde(default = "default_window_mode")]
     pub window_mode: String,
+    /// Starred ("bookmarked") notes.
+    #[serde(default)]
+    pub bookmarks: Vec<std::path::PathBuf>,
+    /// Whether the second pane follows links clicked in the first pane.
+    #[serde(default)]
+    pub linked_pane: bool,
     /// Graph colour groups: a tag prefix → palette index (0..7).
     #[serde(default)]
     pub graph_color_groups: Vec<(String, usize)>,
@@ -141,6 +147,8 @@ impl Default for Config {
             wysiwyg: true,
             spellcheck: false,
             window_mode: default_window_mode(),
+            bookmarks: Vec::new(),
+            linked_pane: false,
             graph_color_groups: Vec::new(),
             graph_repulsion: 1.0,
             graph_attraction: 1.0,
