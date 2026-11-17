@@ -83,6 +83,12 @@ pub struct Config {
     /// Sort the tag pane by note count instead of name.
     #[serde(default)]
     pub tag_sort_count: bool,
+    /// Poll the vault for changes made by other programs.
+    #[serde(default = "default_true")]
+    pub watch_external: bool,
+    /// Stack tabs as full-width rows (Obsidian's stacked tabs).
+    #[serde(default)]
+    pub stacked_tabs: bool,
     /// Graph colour groups: a tag prefix → palette index (0..7).
     #[serde(default)]
     pub graph_color_groups: Vec<(String, usize)>,
@@ -169,6 +175,8 @@ impl Default for Config {
             vertical_tabs: true,
             sidebar_graph: true,
             tag_sort_count: false,
+            watch_external: true,
+            stacked_tabs: false,
             graph_color_groups: Vec::new(),
             graph_repulsion: 1.0,
             graph_attraction: 1.0,

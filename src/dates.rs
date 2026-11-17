@@ -37,6 +37,16 @@ pub fn month_name(m: u32) -> &'static str {
 
 /// Short weekday labels, Sunday-first.
 pub const WEEKDAY_SHORT: [&str; 7] = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+/// Full English weekday names, indexed like [`weekday`].
+pub const WEEKDAY_NAMES: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
 
 /// Days since 1970-01-01 for a civil date.
 pub fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {

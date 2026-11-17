@@ -24,7 +24,7 @@ use argon2::Argon2;
 use serde::{Deserialize, Serialize};
 
 /// File magic identifying an encrypted note.
-const MAGIC: &[u8; 5] = b"ENCD1";
+pub const MAGIC: &[u8; 5] = b"ENCD1";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;

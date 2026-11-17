@@ -12,6 +12,9 @@ fn default_w() -> f32 {
 fn default_h() -> f32 {
     120.0
 }
+fn default_true() -> bool {
+    true
+}
 fn default_kind() -> String {
     "text".to_string()
 }
@@ -35,6 +38,13 @@ pub struct Node {
     pub file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// For PDF cards: which page the preview shows (1-based, 0 = first).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub page: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -48,6 +58,10 @@ pub struct Edge {
     pub from_side: String,
     #[serde(rename = "toSide", default)]
     pub to_side: String,
+    /// Whether the edge is drawn with an arrowhead at the target end.
+    /// Defaults to true so existing boards gain visible direction.
+    #[serde(default = "default_true")]
+    pub arrow: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -96,6 +110,7 @@ impl Canvas {
             text: String::new(),
             file: None,
             color: None,
+            page: 0,
         });
         id
     }
@@ -113,6 +128,7 @@ impl Canvas {
             text: String::new(),
             file: Some(file.to_string()),
             color: None,
+            page: 0,
         });
         id
     }
@@ -130,6 +146,7 @@ impl Canvas {
             text: "Group".to_string(),
             file: None,
             color: Some("6".to_string()),
+            page: 0,
         });
         id
     }
@@ -147,6 +164,7 @@ impl Canvas {
             text: url.to_string(),
             file: Some(url.to_string()),
             color: None,
+            page: 0,
         });
         id
     }
@@ -176,6 +194,7 @@ impl Canvas {
             to_node: to.to_string(),
             from_side: String::new(),
             to_side: String::new(),
+            arrow: true,
         });
     }
 

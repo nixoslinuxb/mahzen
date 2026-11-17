@@ -19,6 +19,7 @@ use crate::markdown;
 use crate::media;
 use crate::palette;
 use crate::passwords;
+use crate::portability;
 use crate::query;
 use crate::search;
 use crate::theme;
@@ -31,6 +32,13 @@ type FeedRx = mpsc::Receiver<(u32, Result<(String, Vec<feeds::Item>), String>)>;
 type FaviconRx = mpsc::Receiver<(String, Result<Vec<u8>, String>)>;
 /// Results from a background web-card metadata fetch (url, (title, description)).
 type WebMetaRx = mpsc::Receiver<(String, Result<(String, String), String>)>;
+
+/// Which direction the Markdown portability dialog is working in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PortabilityMode {
+    Export,
+    Import,
+}
 
 /// What kind of file the attachment picker is looking for.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -343,6 +351,11 @@ enum Command {
     NoteComposer,
     VoiceNote,
     ToggleLinkedPane,
+    OpenInNewView,
+    ToggleStackedTabs,
+    ExportMarkdown,
+    ImportMarkdown,
+    PrintExport,
     TogglePanel,
     ToggleGraph,
     Lock,
@@ -351,7 +364,7 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 37] = [
+    const ALL: [Command; 42] = [
         Command::NewNote,
         Command::NewSubnote,
         Command::OpenVault,
@@ -384,6 +397,11 @@ impl Command {
         Command::NoteComposer,
         Command::VoiceNote,
         Command::ToggleLinkedPane,
+        Command::OpenInNewView,
+        Command::ToggleStackedTabs,
+        Command::ExportMarkdown,
+        Command::ImportMarkdown,
+        Command::PrintExport,
         Command::TogglePanel,
         Command::ToggleGraph,
         Command::Lock,
@@ -425,6 +443,11 @@ impl Command {
             Command::NoteComposer => crate::tr!("Note composer (merge / split)…"),
             Command::VoiceNote => crate::tr!("Record a voice note"),
             Command::ToggleLinkedPane => crate::tr!("Toggle linked second pane"),
+            Command::OpenInNewView => crate::tr!("Open current note in a new view"),
+            Command::ToggleStackedTabs => crate::tr!("Toggle stacked tabs"),
+            Command::ExportMarkdown => crate::tr!("Export vault as plain Markdown…"),
+            Command::ImportMarkdown => crate::tr!("Import Markdown / Obsidian vault…"),
+            Command::PrintExport => crate::tr!("Export current note (PDF / HTML / print)…"),
             Command::TogglePanel => crate::tr!("Toggle side panel"),
             Command::ToggleGraph => crate::tr!("Toggle graph view"),
             Command::Lock => crate::tr!("Lock the vault"),
@@ -467,6 +490,11 @@ impl Command {
             Command::NoteComposer => Icon::Split,
             Command::VoiceNote => Icon::Mic,
             Command::ToggleLinkedPane => Icon::PanelRight,
+            Command::OpenInNewView => Icon::Split,
+            Command::ToggleStackedTabs => Icon::PanelRight,
+            Command::ExportMarkdown => Icon::Download,
+            Command::ImportMarkdown => Icon::Upload,
+            Command::PrintExport => Icon::File,
             Command::TogglePanel => Icon::PanelRight,
             Command::ToggleGraph => Icon::Graph,
             Command::Lock => Icon::Lock,
@@ -487,6 +515,9 @@ enum ViewMode {
 
 /// One open note.
 struct Tab {
+    /// Unique per open view: the same note can be open in two independent
+    /// views (each with its own view mode and scroll position).
+    id: u64,
     path: PathBuf,
     title: String,
     text: String,
@@ -649,6 +680,18 @@ pub struct EncryptedNoteApp {
     column_index: usize,
     column_text: String,
     column_mode: usize,
+    /// Monotonic id source for tabs (independent views of one note).
+    tab_seq: u64,
+    /// Stack tabs as full-width rows instead of a strip.
+    stacked_tabs: bool,
+    /// A tab being dragged between panes.
+    dragging_tab: Option<usize>,
+    /// External-change watcher for the vault.
+    watcher: crate::watch::Watcher,
+    /// Notes with unsaved edits that also changed on disk (conflict).
+    conflicts: HashSet<PathBuf>,
+    /// Last time the watcher polled.
+    last_watch_poll: f64,
     /// Expanded parent tags in the tag pane.
     tag_expanded: HashSet<String>,
     /// Sort the tag pane by count rather than name.
@@ -667,6 +710,14 @@ pub struct EncryptedNoteApp {
     composer_error: Option<String>,
     /// An in-progress voice recording: (child, file, started-at).
     voice_recording: Option<(std::process::Child, PathBuf, f64)>,
+    /// Markdown export/import dialog.
+    portability: Option<(PortabilityMode, DirPicker)>,
+    portability_error: Option<String>,
+    /// Print / PDF / HTML export dialog.
+    print_open: bool,
+    print_target: String,
+    print_error: Option<String>,
+    print_use_browser: bool,
     /// Visual table editor state.
     table_edit_open: bool,
     table_rows: Vec<Vec<String>>,
@@ -854,6 +905,7 @@ impl EncryptedNoteApp {
         let config = Config::load();
         let initial_bookmarks = config.bookmarks.clone();
         let initial_tag_sort = config.tag_sort_count;
+        let config_stacked = config.stacked_tabs;
         let initial_show_right = config.show_right;
         let initial_window_mode = config.window_mode.clone();
         crate::i18n::set(crate::i18n::Lang::from_code(&config.language));
@@ -922,6 +974,12 @@ impl EncryptedNoteApp {
             column_index: 0,
             column_text: String::new(),
             column_mode: 0,
+            tab_seq: 0,
+            stacked_tabs: config_stacked,
+            dragging_tab: None,
+            watcher: crate::watch::Watcher::new(),
+            conflicts: HashSet::new(),
+            last_watch_poll: 0.0,
             tag_expanded: HashSet::new(),
             tag_sort_count: initial_tag_sort,
             spell_cache: (0, HashSet::new()),
@@ -932,6 +990,12 @@ impl EncryptedNoteApp {
             composer_target: String::new(),
             composer_error: None,
             voice_recording: None,
+            portability: None,
+            portability_error: None,
+            print_open: false,
+            print_target: String::new(),
+            print_error: None,
+            print_use_browser: true,
             table_edit_open: false,
             table_rows: Vec::new(),
             table_span: None,
@@ -1120,6 +1184,8 @@ impl EncryptedNoteApp {
                 self.backlinks.clear();
                 self.config.remember_vault(&path);
                 self.config.save();
+                self.watcher.clear();
+                self.conflicts.clear();
                 self.status = "Vault opened".to_string();
                 // Encrypt any pre-existing plaintext notes in this vault.
                 self.migrate_plaintext();
@@ -1298,7 +1364,9 @@ impl EncryptedNoteApp {
         match self.read_note(&path) {
             Some(text) => {
                 let title = self.title_of(&path);
+                self.tab_seq += 1;
                 self.tabs.push(Tab {
+                    id: self.tab_seq,
                     path,
                     title,
                     saved: text.clone(),
@@ -1529,7 +1597,8 @@ impl EncryptedNoteApp {
 
     /// Read the active editor's current character selection, if any.
     fn current_selection(&self, ctx: &egui::Context) -> Option<(usize, usize)> {
-        let id = egui::Id::new(("editor", self.active, 0u8));
+        let tab_id = self.tabs.get(self.active)?.id;
+        let id = egui::Id::new(("editor", tab_id));
         let state = egui::text_edit::TextEditState::load(ctx, id)?;
         let range = state.cursor.char_range()?;
         let [a, b] = range.sorted();
@@ -1726,6 +1795,281 @@ impl EncryptedNoteApp {
                 self.active = 0;
             }
         }
+    }
+
+    fn open_portability(&mut self, mode: PortabilityMode) {
+        let start = self
+            .vault
+            .as_ref()
+            .map(|v| v.root.clone())
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("/"));
+        self.portability_error = None;
+        self.portability = Some((mode, DirPicker::new(start)));
+    }
+
+    /// Export the whole vault to plain Markdown under the chosen folder.
+    fn run_markdown_export(&mut self, dest: &Path) {
+        let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
+            self.portability_error = Some(crate::tr!("Open a vault first").into());
+            return;
+        };
+        let paths: Vec<PathBuf> = self
+            .vault
+            .as_ref()
+            .map(|v| v.notes.iter().map(|n| n.path.clone()).collect())
+            .unwrap_or_default();
+        let mut notes: Vec<(PathBuf, String)> = Vec::new();
+        for p in &paths {
+            if let Some(text) = self.read_note(p) {
+                let rel = p
+                    .strip_prefix(&root)
+                    .map(|r| r.to_path_buf())
+                    .unwrap_or_else(|_| PathBuf::from(p.file_name().unwrap_or_default()));
+                notes.push((rel, text));
+            }
+        }
+        // Copy attachments (they live outside the encrypted note set).
+        let mut assets: Vec<PathBuf> = Vec::new();
+        let assets_dir = root.join("assets");
+        if assets_dir.is_dir() {
+            for entry in std::fs::read_dir(&assets_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if entry.path().is_file() {
+                    assets.push(PathBuf::from("assets").join(entry.file_name()));
+                }
+            }
+        }
+        let report = portability::export_notes(&notes, &assets, &root, dest);
+        self.portability = None;
+        self.status = crate::tr!(
+            "Exported {} note(s) and {} asset(s) to {}",
+            report.notes,
+            report.assets,
+            dest.display()
+        );
+        if !report.errors.is_empty() {
+            self.portability_error = Some(report.errors.join("\n"));
+        }
+    }
+
+    /// Import a Markdown folder (e.g. an Obsidian vault) into this vault.
+    fn run_markdown_import(&mut self, src: &Path) {
+        let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
+            self.portability_error = Some(crate::tr!("Open a vault first").into());
+            return;
+        };
+        if let (Ok(a), Ok(b)) = (src.canonicalize(), root.canonicalize()) {
+            if a == b {
+                self.portability_error = Some(crate::tr!("Pick a different folder").into());
+                return;
+            }
+        }
+        let (files, assets) = portability::scan_import(src, crypto::MAGIC);
+        if files.is_empty() {
+            self.portability_error = Some(crate::tr!("No Markdown files found").into());
+            return;
+        }
+        // Phase 1: read + decrypt every note (immutable borrows only).
+        let texts: Vec<Option<String>> = files
+            .iter()
+            .map(|file| {
+                let bytes = std::fs::read(&file.source).ok()?;
+                if file.encrypted {
+                    self.crypto.as_ref()?.decrypt(&bytes)
+                } else {
+                    String::from_utf8(bytes).ok()
+                }
+            })
+            .collect();
+        // Phase 2: write them encrypted into the vault (immutable borrow).
+        let mut report = portability::ImportReport::default();
+        for (file, text) in files.iter().zip(texts) {
+            let Some(text) = text else {
+                report.skipped += 1;
+                report
+                    .errors
+                    .push(format!("{}: could not read", file.rel.display()));
+                continue;
+            };
+            let dest = portability::unique_target(&root, &file.rel);
+            let Some(c) = self.crypto.as_ref() else {
+                self.portability_error = Some(crate::tr!("Vault is locked").into());
+                return;
+            };
+            match Vault::write_bytes(&dest, &c.encrypt(&text)) {
+                Ok(()) => report.notes += 1,
+                Err(e) => {
+                    report.skipped += 1;
+                    report.errors.push(format!("{}: {e}", file.rel.display()));
+                }
+            }
+        }
+        for rel in &assets {
+            let dest = portability::unique_target(&root, rel);
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::copy(src.join(rel), &dest) {
+                Ok(_) => report.assets += 1,
+                Err(e) => {
+                    report.skipped += 1;
+                    report.errors.push(format!("{}: {e}", rel.display()));
+                }
+            }
+        }
+        self.portability = None;
+        self.refresh_vault();
+        self.rebuild_index();
+        self.status = crate::tr!(
+            "Imported {} note(s) and {} asset(s)",
+            report.notes,
+            report.assets
+        );
+        if !report.errors.is_empty() {
+            self.portability_error = Some(report.errors.join("\n"));
+        }
+    }
+
+    /// Export the active note as HTML, then hand it to a PDF/print tool.
+    fn run_print_export(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            self.print_error = Some(crate::tr!("Open a note first").into());
+            return;
+        };
+        let title = tab.title.clone();
+        let raw = tab.text.clone();
+        let html = markdown_to_html(&title, &raw);
+        let default = format!(
+            "{}/{}.html",
+            std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+            Vault::sanitize_name(&title)
+        );
+        let target = if self.print_target.trim().is_empty() {
+            default
+        } else {
+            expand_tilde(self.print_target.trim()).display().to_string()
+        };
+        let path = PathBuf::from(&target);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&path, &html) {
+            self.print_error = Some(format!("{e}"));
+            return;
+        }
+        // If it was saved as HTML, offer to open it in the browser (which can
+        // print / "Save as PDF"). A `.pdf` target goes straight to the converter.
+        if target.to_ascii_lowercase().ends_with(".pdf") {
+            let ok = std::process::Command::new("wkhtmltopdf")
+                .args(["--enable-local-file-access", &target, &target])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !ok {
+                let html_path = path.with_extension("html");
+                let _ = std::fs::write(&html_path, &html);
+                self.print_error = Some(crate::tr!(
+                    "PDF converter not found — wrote {} instead",
+                    html_path.display()
+                ));
+                return;
+            }
+        } else if self.print_use_browser {
+            open_external(&format!("file://{target}"));
+        }
+        self.print_open = false;
+        self.status = crate::tr!("Exported {}", target);
+    }
+
+    /// Poll for changes made by other programs and apply them.
+    ///
+    /// - A note that changed on disk and has no unsaved edits is reloaded
+    ///   automatically (tabs, index and backlinks refresh).
+    /// - A note that changed on disk *and* has unsaved local edits is flagged as
+    ///   a conflict: we keep the user's buffer and offer "Reload from disk" in
+    ///   the status bar instead of silently losing either side.
+    fn poll_external_changes(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.config.watch_external || now - self.last_watch_poll < 1.2 {
+            return;
+        }
+        self.last_watch_poll = now;
+        let Some(vault) = self.vault.as_ref() else {
+            return;
+        };
+        let paths: Vec<PathBuf> = vault.notes.iter().map(|n| n.path.clone()).collect();
+        if !self.watcher.is_primed() {
+            self.watcher.prime(&paths);
+            return;
+        }
+        let changes = self.watcher.poll(&paths);
+        // New/removed notes just mean the tree and index need a refresh.
+        if !changes.added.is_empty() || !changes.removed.is_empty() {
+            self.refresh_vault();
+            self.rebuild_index();
+            self.recompute_backlinks();
+        }
+        if changes.modified.is_empty() {
+            return;
+        }
+        let mut reloaded = 0usize;
+        for path in &changes.modified {
+            let Some(idx) = self.tabs.iter().position(|t| &t.path == path) else {
+                continue;
+            };
+            // Our own editor state wins while it is dirty.
+            if self.tabs[idx].dirty() {
+                self.conflicts.insert(path.clone());
+                continue;
+            }
+            if let Some(text) = self.read_note(path) {
+                let tab = &mut self.tabs[idx];
+                tab.text = text.clone();
+                tab.saved = text;
+                tab.undo.clear();
+                tab.redo.clear();
+                reloaded += 1;
+            }
+        }
+        if reloaded > 0 {
+            self.rebuild_index();
+            self.recompute_backlinks();
+        }
+        if !self.conflicts.is_empty() {
+            self.status = crate::tr!(
+                "{} note(s) changed on disk with unsaved edits — press Ctrl+Shift+R to reload",
+                self.conflicts.len()
+            );
+        } else if reloaded > 0 {
+            self.status = crate::tr!("Reloaded {} note(s) changed on disk", reloaded);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(1200));
+    }
+
+    /// Reload the active note from disk, discarding local edits (conflict
+    /// resolution, bound to Ctrl+Shift+R).
+    fn reload_active_from_disk(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let path = tab.path.clone();
+        let Some(text) = self.read_note(&path) else {
+            self.status = crate::tr!("Could not read note").into();
+            return;
+        };
+        let tab = &mut self.tabs[self.active];
+        tab.text = text.clone();
+        tab.saved = text;
+        tab.undo.clear();
+        tab.redo.clear();
+        self.conflicts.remove(&path);
+        self.watcher.note_own_write(&path);
+        self.rebuild_index();
+        self.recompute_backlinks();
+        self.status = crate::tr!("Reloaded from disk").into();
     }
 
     /// Open a random note from the vault.
@@ -2106,6 +2450,8 @@ impl EncryptedNoteApp {
         let title = self.tabs[idx].title.clone();
         match self.write_note(&path, &text) {
             Ok(()) => {
+                self.watcher.note_own_write(&path);
+                self.conflicts.remove(&path);
                 self.tabs[idx].saved = text;
                 self.status = crate::tr!("Saved · {}", title);
             }
@@ -2596,6 +2942,23 @@ impl EncryptedNoteApp {
             Command::ToggleBookmark => self.toggle_bookmark(),
             Command::NoteComposer => self.open_composer(),
             Command::VoiceNote => self.toggle_voice_note(),
+            Command::OpenInNewView => self.open_in_new_view(),
+            Command::ToggleStackedTabs => {
+                self.stacked_tabs = !self.stacked_tabs;
+                self.config.stacked_tabs = self.stacked_tabs;
+                self.config.save();
+                self.status = if self.stacked_tabs {
+                    crate::tr!("Stacked tabs on").into()
+                } else {
+                    crate::tr!("Stacked tabs off").into()
+                };
+            }
+            Command::ExportMarkdown => self.open_portability(PortabilityMode::Export),
+            Command::ImportMarkdown => self.open_portability(PortabilityMode::Import),
+            Command::PrintExport => {
+                self.print_open = true;
+                self.print_error = None;
+            }
             Command::ToggleLinkedPane => {
                 self.config.linked_pane = !self.config.linked_pane;
                 self.config.save();
@@ -2880,6 +3243,7 @@ impl EncryptedNoteApp {
         &mut self,
         ctx: &egui::Context,
         path: &Path,
+        page: u32,
     ) -> Option<egui::TextureHandle> {
         use std::hash::{Hash, Hasher};
         let cache = config::dir().join("pdf-cache");
@@ -2892,7 +3256,7 @@ impl EncryptedNoteApp {
                 m.hash(&mut h);
             }
         }
-        let out = cache.join(format!("{:016x}.png", h.finish()));
+        let out = cache.join(format!("{:016x}-p{}.png", h.finish(), page.max(1)));
         if let Some(tex) = self.media_textures.get(&out) {
             return Some(tex.clone());
         }
@@ -3036,9 +3400,11 @@ impl EncryptedNoteApp {
                     }
                 }
                 ui.label(
-                    RichText::new("· double-click edits · drag ◉ to connect")
-                        .small()
-                        .weak(),
+                    RichText::new(
+                        "· double-click edits · drag ◉ to connect · click a line for options",
+                    )
+                    .small()
+                    .weak(),
                 );
             });
         }
@@ -3179,19 +3545,89 @@ impl EncryptedNoteApp {
                 else {
                     continue;
                 };
-                let pa = to_screen(egui::vec2(a.x + a.width / 2.0, a.y + a.height / 2.0));
-                let pb = to_screen(egui::vec2(b.x + b.width / 2.0, b.y + b.height / 2.0));
+                // Anchor on the requested side when set, else the centres.
+                let side_point = |n: &canvas::Node, side: &str, other: &canvas::Node| {
+                    let ox = other.x + other.width / 2.0;
+                    let oy = other.y + other.height / 2.0;
+                    match side {
+                        "left" => (n.x, n.y + n.height / 2.0),
+                        "right" => (n.x + n.width, n.y + n.height / 2.0),
+                        "top" => (n.x + n.width / 2.0, n.y),
+                        "bottom" => (n.x + n.width / 2.0, n.y + n.height),
+                        _ => {
+                            // Snap to the side facing the other node.
+                            let nx = n.x + n.width / 2.0;
+                            let ny = n.y + n.height / 2.0;
+                            if (ox - nx).abs() > (oy - ny).abs() {
+                                if ox > nx {
+                                    (n.x + n.width, ny)
+                                } else {
+                                    (n.x, ny)
+                                }
+                            } else if oy > ny {
+                                (n.x + n.width / 2.0, n.y + n.height)
+                            } else {
+                                (n.x + n.width / 2.0, n.y)
+                            }
+                        }
+                    }
+                };
+                let (ax, ay) = side_point(a, &e.from_side, b);
+                let (bx, by) = side_point(b, &e.to_side, a);
+                let pa = to_screen(egui::vec2(ax, ay));
+                let pb = to_screen(egui::vec2(bx, by));
                 painter.line_segment(
                     [pa, pb],
                     egui::Stroke::new(1.6_f32, theme::ACCENT.linear_multiply(0.7)),
                 );
-                let d = (pb - pa).normalized();
-                let perp = egui::vec2(-d.y, d.x);
-                painter.add(egui::Shape::convex_polygon(
-                    vec![pb, pb - d * 10.0 + perp * 5.0, pb - d * 10.0 - perp * 5.0],
-                    theme::ACCENT,
-                    egui::Stroke::NONE,
-                ));
+                if e.arrow {
+                    let d = (pb - pa).normalized();
+                    let perp = egui::vec2(-d.y, d.x);
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![pb, pb - d * 10.0 + perp * 5.0, pb - d * 10.0 - perp * 5.0],
+                        theme::ACCENT,
+                        egui::Stroke::NONE,
+                    ));
+                }
+            }
+            // Edge hit-testing: click a line to toggle its arrow / flip it.
+            if let Some(ptr) = ui.input(|i| i.pointer.hover_pos()) {
+                for e in &view.data.edges {
+                    let (Some(a), Some(b)) =
+                        (view.data.node(&e.from_node), view.data.node(&e.to_node))
+                    else {
+                        continue;
+                    };
+                    let pa = to_screen(egui::vec2(a.x + a.width / 2.0, a.y + a.height / 2.0));
+                    let pb = to_screen(egui::vec2(b.x + b.width / 2.0, b.y + b.height / 2.0));
+                    let mid = pa + (pb - pa) * 0.5;
+                    if mid.distance(ptr) < 9.0 {
+                        let eid = e.id.clone();
+                        ui.interact(
+                            egui::Rect::from_center_size(mid, egui::vec2(18.0, 18.0)),
+                            ui.id().with(("cedge", &eid)),
+                            egui::Sense::click(),
+                        )
+                        .context_menu(|ui| {
+                            if ui.button("Toggle arrowhead").clicked() {
+                                if let Some(edge) = view.data.edges.iter_mut().find(|x| x.id == eid)
+                                {
+                                    edge.arrow = !edge.arrow;
+                                }
+                                ui.close_menu();
+                            }
+                            if ui.button("Reverse direction").clicked() {
+                                if let Some(edge) = view.data.edges.iter_mut().find(|x| x.id == eid)
+                                {
+                                    std::mem::swap(&mut edge.from_node, &mut edge.to_node);
+                                    std::mem::swap(&mut edge.from_side, &mut edge.to_side);
+                                }
+                                ui.close_menu();
+                            }
+                        });
+                        break;
+                    }
+                }
             }
             // Connector preview.
             if let (Some(from), Some(ptr)) =
@@ -3216,6 +3652,7 @@ impl EncryptedNoteApp {
         let mut resize: Option<(String, egui::Vec2)> = None;
         let mut dragged_now = false;
         let mut resized_now = false;
+        let mut page_change: Option<(String, i32)> = None;
         for id in &ids {
             let Some(node) = view.data.node(id) else {
                 continue;
@@ -3253,7 +3690,13 @@ impl EncryptedNoteApp {
             };
             let fs = 13.0 * zoom.clamp(0.6, 1.6);
             let mut body_top = nrect.shrink(6.0).min + egui::vec2(0.0, fs + 3.0);
-            // PDF file cards get a first-page preview.
+            // PDF file cards get a page preview with paging controls.
+            let pdf_is_pdf = node.kind == "file"
+                && node
+                    .file
+                    .as_deref()
+                    .map(|f| f.to_ascii_lowercase().ends_with(".pdf"))
+                    .unwrap_or(false);
             let pdf_tex = if node.kind == "file" {
                 node.file.as_ref().and_then(|f| {
                     if !f.to_ascii_lowercase().ends_with(".pdf") {
@@ -3267,7 +3710,7 @@ impl EncryptedNoteApp {
                             .map(|v| v.root.join(f))
                             .unwrap_or_else(|| PathBuf::from(f))
                     };
-                    self.canvas_pdf_texture(ui.ctx(), &p)
+                    self.canvas_pdf_texture(ui.ctx(), &p, node.page.max(1))
                 })
             } else {
                 None
@@ -3308,8 +3751,56 @@ impl EncryptedNoteApp {
                     );
                 }
             }
+            if pdf_is_pdf {
+                // Page controls for multi-page PDFs (prev / next + label).
+                let ctrl = egui::Rect::from_min_size(
+                    egui::pos2(nrect.min.x + 6.0, nrect.max.y - 17.0),
+                    egui::vec2(nrect.width() - 12.0, 14.0),
+                );
+                if ctrl.intersects(ui.ctx().screen_rect()) {
+                    let prev = egui::Rect::from_min_size(ctrl.min, egui::vec2(16.0, 14.0));
+                    let next = egui::Rect::from_min_size(
+                        egui::pos2(ctrl.max.x - 16.0, ctrl.min.y),
+                        egui::vec2(16.0, 14.0),
+                    );
+                    let prev_r =
+                        ui.interact(prev, ui.id().with(("pdfprev", id)), egui::Sense::click());
+                    let next_r =
+                        ui.interact(next, ui.id().with(("pdfnext", id)), egui::Sense::click());
+                    ui.painter().text(
+                        prev.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "‹",
+                        egui::FontId::proportional(12.0),
+                        theme::TEXT,
+                    );
+                    ui.painter().text(
+                        next.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "›",
+                        egui::FontId::proportional(12.0),
+                        theme::TEXT,
+                    );
+                    ui.painter().text(
+                        ctrl.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("p.{}", node.page.max(1)),
+                        egui::FontId::proportional(9.5),
+                        theme::TEXT_MUTED,
+                    );
+                    if prev_r.clicked() {
+                        page_change = Some((id.clone(), -1i32));
+                    }
+                    if next_r.clicked() {
+                        page_change = Some((id.clone(), 1i32));
+                    }
+                }
+            }
             if let Some(tex) = pdf_tex {
-                let avail = egui::Rect::from_min_max(body_top, nrect.shrink(6.0).max);
+                let avail = egui::Rect::from_min_max(
+                    body_top,
+                    egui::pos2(nrect.shrink(6.0).max.x, nrect.max.y - 20.0),
+                );
                 if avail.width() > 8.0 && avail.height() > 8.0 {
                     let sz = tex.size_vec2();
                     let aspect = if sz.x > 0.0 { sz.y / sz.x } else { 1.4 };
@@ -3390,6 +3881,13 @@ impl EncryptedNoteApp {
             }
         }
 
+        // Apply PDF page changes.
+        if let Some((id, delta)) = page_change {
+            if let Some(n) = view.data.node_mut(&id) {
+                let cur = n.page.max(1) as i32;
+                n.page = (cur + delta).max(1) as u32;
+            }
+        }
         // Apply node interactions.
         if dragged_now || resized_now {
             view.snapshot();
@@ -3454,6 +3952,17 @@ impl EncryptedNoteApp {
                         .unwrap_or_else(|| target.clone());
                     if kind == "link" {
                         open_external(&target);
+                    } else if target.to_ascii_lowercase().ends_with(".pdf") {
+                        let path = if Path::new(&target).is_absolute() {
+                            PathBuf::from(&target)
+                        } else {
+                            self.vault
+                                .as_ref()
+                                .map(|v| v.root.join(&target))
+                                .unwrap_or_else(|| PathBuf::from(&target))
+                        };
+                        let page = view.data.node(&id).map(|n| n.page.max(1)).unwrap_or(1);
+                        open_external(&format!("{}#page={page}", path.display()));
                     } else if let Some(p) = self.index.resolve(&stem) {
                         self.pending_open = Some(p);
                     } else {
@@ -4398,6 +4907,8 @@ impl EncryptedNoteApp {
         let text = self.tabs[idx].text.clone();
         match self.write_note(&path, &text) {
             Ok(()) => {
+                self.watcher.note_own_write(&path);
+                self.conflicts.remove(&path);
                 self.tabs[idx].saved = text;
                 self.status = format!("Attached {rel}");
             }
@@ -8365,6 +8876,12 @@ impl EncryptedNoteApp {
     }
 
     fn tab_strip(&mut self, ui: &mut egui::Ui) {
+        // Stacked tabs: a vertical column of full-width rows (Obsidian's
+        // "stacked tabs" layout). Otherwise the classic horizontal strip.
+        if self.stacked_tabs {
+            self.stacked_tab_strip(ui);
+            return;
+        }
         let mut to_close: Option<usize> = None;
         let mut select: Option<usize> = None;
         // Obsidian-style tabs: a darker strip, the active tab lifted to the
@@ -8375,6 +8892,8 @@ impl EncryptedNoteApp {
         let (bar, _) =
             ui.allocate_exact_size(egui::vec2(strip.width(), 30.0), egui::Sense::hover());
         ui.painter().rect_filled(bar, 0.0, theme::PANEL_DEEP);
+        let mut drag_started: Option<usize> = None;
+        let mut drop_on_pane: Option<usize> = None;
         ui.allocate_ui_at_rect(bar.shrink2(egui::vec2(6.0, 3.0)), |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
@@ -8383,8 +8902,11 @@ impl EncryptedNoteApp {
                     let dirty = self.tabs[i].dirty();
                     let title = self.tabs[i].title.clone();
                     let selected = i == self.active;
+                    let secondary = self.secondary == Some(i);
                     let fill = if selected {
                         theme::BASE
+                    } else if secondary {
+                        theme::ACCENT.linear_multiply(0.18)
                     } else {
                         theme::WIDGET.linear_multiply(0.55)
                     };
@@ -8434,8 +8956,11 @@ impl EncryptedNoteApp {
                     let resp = ui.interact(
                         tab_resp.rect,
                         ui.id().with(("tabclick", i)),
-                        egui::Sense::click(),
+                        egui::Sense::click_and_drag(),
                     );
+                    if resp.drag_started() {
+                        drag_started = Some(i);
+                    }
                     if resp.clicked() {
                         if ui.input(|inp| inp.modifiers.command) {
                             self.secondary = Some(i);
@@ -8443,6 +8968,14 @@ impl EncryptedNoteApp {
                             self.status = crate::tr!("Loaded into second pane").into();
                         } else {
                             select = Some(i);
+                        }
+                    }
+                    // Drop target: the right half of the tab bar means "move to
+                    // the second pane", the left half means "back to the main
+                    // pane". Lets you drag tabs between panes.
+                    if let Some(ptr) = ui.input(|i| i.pointer.interact_pos()) {
+                        if resp.dragged() && bar.contains(ptr) {
+                            drop_on_pane = Some(i);
                         }
                     }
                     if resp.hovered() && !selected {
@@ -8470,6 +9003,23 @@ impl EncryptedNoteApp {
                 });
             });
         });
+        if let Some(i) = drag_started {
+            self.dragging_tab = Some(i);
+        }
+        if ui.input(|i| i.pointer.any_released()) {
+            if let (Some(from), Some(_over)) = (self.dragging_tab.take(), drop_on_pane) {
+                // Dropping a tab: put it in the second pane (dragging out of the
+                // main view) — the reverse drag collapses the pane again.
+                if self.secondary == Some(from) {
+                    self.secondary = None;
+                    self.status = crate::tr!("Moved to the main pane").into();
+                } else {
+                    self.secondary = Some(from);
+                    self.secondary_live_line = 0;
+                    self.status = crate::tr!("Moved to the second pane").into();
+                }
+            }
+        }
         if let Some(i) = select {
             self.active = i;
         }
@@ -8479,7 +9029,141 @@ impl EncryptedNoteApp {
         ui.add_space(6.0);
     }
 
-    /// Obsidian "sliding panes" look: tabs as narrow vertical strips with the
+    /// Full-width rows of tabs in a left column (Obsidian's stacked tabs).
+    fn stacked_tab_strip(&mut self, ui: &mut egui::Ui) {
+        let mut to_close: Option<usize> = None;
+        let mut select: Option<usize> = None;
+        let count = self.tabs.len();
+        if count == 0 {
+            return;
+        }
+        let frame = egui::Frame::none()
+            .fill(theme::PANEL_DEEP)
+            .inner_margin(egui::Margin::symmetric(4.0, 4.0));
+        egui::SidePanel::left("stacked_tabs")
+            .frame(frame)
+            .exact_width(190.0)
+            .resizable(true)
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for i in 0..count {
+                            let dirty = self.tabs[i].dirty();
+                            let title = self.tabs[i].title.clone();
+                            let selected = i == self.active;
+                            let secondary = self.secondary == Some(i);
+                            let fill = if selected {
+                                theme::BASE
+                            } else if secondary {
+                                theme::ACCENT.linear_multiply(0.18)
+                            } else {
+                                theme::PANEL
+                            };
+                            let resp = egui::Frame::none()
+                                .fill(fill)
+                                .rounding(egui::Rounding::same(4.0))
+                                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 5.0;
+                                        if dirty {
+                                            icons::icon(ui, Icon::Dot, 6.0, theme::ACCENT);
+                                        }
+                                        let color = if selected {
+                                            theme::TEXT
+                                        } else {
+                                            theme::TEXT_MUTED
+                                        };
+                                        ui.label(
+                                            RichText::new(ellipsize(&title, 22))
+                                                .size(12.0)
+                                                .color(color),
+                                        );
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if icons::button(
+                                                    ui,
+                                                    Icon::Close,
+                                                    10.0,
+                                                    true,
+                                                    false,
+                                                    crate::tr!("Close tab"),
+                                                )
+                                                .clicked()
+                                                {
+                                                    to_close = Some(i);
+                                                }
+                                            },
+                                        );
+                                    });
+                                })
+                                .response;
+                            if selected {
+                                ui.painter().rect_filled(
+                                    egui::Rect::from_min_size(
+                                        resp.rect.min,
+                                        egui::vec2(2.0, resp.rect.height()),
+                                    ),
+                                    1.0,
+                                    theme::ACCENT,
+                                );
+                            }
+                            let click = ui.interact(
+                                resp.rect,
+                                ui.id().with(("stackedtab", i)),
+                                egui::Sense::click(),
+                            );
+                            if click.clicked() {
+                                if ui.input(|inp| inp.modifiers.command) {
+                                    self.secondary = Some(i);
+                                    self.secondary_live_line = 0;
+                                    self.status = crate::tr!("Loaded into second pane").into();
+                                } else {
+                                    select = Some(i);
+                                }
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+            });
+        if let Some(i) = select {
+            self.active = i;
+        }
+        if let Some(i) = to_close {
+            self.close_tab(i);
+        }
+        ui.add_space(6.0);
+    }
+
+    /// Duplicate the active note into a new, independent view (its own view
+    /// mode and scroll position) and focus it.
+    fn open_in_new_view(&mut self) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            self.status = crate::tr!("Open a note first").into();
+            return;
+        };
+        let mut copy = Tab {
+            id: self.tab_seq + 1,
+            path: tab.path.clone(),
+            title: tab.title.clone(),
+            text: tab.text.clone(),
+            saved: tab.saved.clone(),
+            view: tab.view,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        };
+        self.tab_seq += 1;
+        copy.id = self.tab_seq;
+        self.tabs.push(copy);
+        let idx = self.tabs.len() - 1;
+        self.active = idx;
+        self.status = crate::tr!("Opened in a new view").into();
+    }
+
+    /// Obsidian "sliding panes" look:    /// Obsidian "sliding panes" look: tabs as narrow vertical strips with the
     /// title letter-stacked down the left edge of the editor.
     fn vertical_tab_strip(&mut self, ui: &mut egui::Ui) -> bool {
         let n = self.tabs.len();
@@ -9174,7 +9858,7 @@ impl EncryptedNoteApp {
         let Some(text) = self.tabs.get(idx).map(|t| t.text.clone()) else {
             return;
         };
-        let id = egui::Id::new(("editor", idx, 0u8));
+        let id = egui::Id::new(("editor", self.tabs.get(idx).map(|t| t.id).unwrap_or(0)));
         if !self.multi_cursor {
             let r = Self::editor_state_range(ctx, id).unwrap_or((0, 0));
             let (a, b) = (r.0.min(r.1), r.0.max(r.1));
@@ -9262,7 +9946,7 @@ impl EncryptedNoteApp {
         let Some(text) = self.tabs.get(idx).map(|t| t.text.clone()) else {
             return;
         };
-        let id = egui::Id::new(("editor", idx, 0u8));
+        let id = egui::Id::new(("editor", self.tabs.get(idx).map(|t| t.id).unwrap_or(0)));
         if !self.multi_cursor {
             let r = Self::editor_state_range(ctx, id).unwrap_or((0, 0));
             self.cursors = vec![(r.0, r.1)];
@@ -9308,7 +9992,8 @@ impl EncryptedNoteApp {
         let concealed = self.config.wysiwyg;
         let snapshot = self.tabs[idx].text.clone();
         let miss = self.misspellings_for(&snapshot);
-        let id = egui::Id::new(("editor", idx, pane));
+        let tab_id = self.tabs[idx].id;
+        let id = egui::Id::new(("editor", tab_id));
         let multi_here = pane == 0 && self.multi_cursor;
 
         // Highlight find matches in the active pane while the find bar is open.
@@ -9374,7 +10059,7 @@ impl EncryptedNoteApp {
         let note_title = self.tabs[idx].title.clone();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .id_source(("editor_scroll", idx, pane))
+            .id_source(("editor_scroll", tab_id, pane))
             .show(ui, |ui| {
                 // Inline title, like Obsidian's document header.
                 ui.add_space(6.0);
@@ -10275,6 +10960,18 @@ impl EncryptedNoteApp {
                             &mut self.config.sidebar_graph,
                             crate::tr!("Mini graph in the sidebar"),
                         );
+                        ui.checkbox(
+                            &mut self.config.watch_external,
+                            crate::tr!("Watch the vault for external changes"),
+                        );
+                        let mut stacked = self.stacked_tabs;
+                        if ui
+                            .checkbox(&mut stacked, crate::tr!("Stacked tabs"))
+                            .changed()
+                        {
+                            self.stacked_tabs = stacked;
+                            self.config.stacked_tabs = stacked;
+                        }
                         ui.checkbox(&mut self.config.spellcheck, crate::tr!("Spell check"));
                         ui.checkbox(&mut self.config.vim, crate::tr!("Vim mode"));
                         ui.checkbox(
@@ -10439,7 +11136,235 @@ impl EncryptedNoteApp {
         }
     }
 
+    /// Plain-Markdown export / import folder chooser.
+    fn portability_dialog(&mut self, ctx: &egui::Context) {
+        let Some((mode, _)) = self.portability.as_ref() else {
+            return;
+        };
+        let mode = *mode;
+        let mut open = true;
+        let mut run: Option<PathBuf> = None;
+        let mut close = false;
+        let title = match mode {
+            PortabilityMode::Export => crate::tr!("Export as Markdown"),
+            PortabilityMode::Import => crate::tr!("Import Markdown"),
+        };
+        let (dirs, current, error) = {
+            let (_, picker) = self.portability.as_ref().unwrap();
+            (
+                picker.subdirs.clone(),
+                picker.current.clone(),
+                picker.error.clone(),
+            )
+        };
+        let mut enter: Option<PathBuf> = None;
+        let mut go_up = false;
+        let mut home = false;
+        let mut manual = {
+            let (_, picker) = self.portability.as_ref().unwrap();
+            picker.manual.clone()
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([560.0, 430.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(match mode {
+                        PortabilityMode::Export => crate::tr!(
+                            "Every note is written as a plain .md file in a separate folder; the encrypted vault is left untouched."
+                        ),
+                        PortabilityMode::Import => crate::tr!(
+                            "Markdown files are copied into this vault and encrypted; the source folder is not modified."
+                        ),
+                    })
+                    .small()
+                    .color(theme::TEXT_MUTED),
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if icons::button(ui, Icon::ArrowUp, 16.0, true, false, "Up").clicked() {
+                        go_up = true;
+                    }
+                    if icons::button(ui, Icon::Home, 16.0, true, false, "Home").clicked() {
+                        home = true;
+                    }
+                    ui.label(
+                        RichText::new(current.display().to_string())
+                            .monospace()
+                            .small(),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut manual)
+                            .hint_text("/path/to/folder")
+                            .desired_width(320.0),
+                    );
+                    let go = ui.button(crate::tr!("Go to path")).clicked()
+                        || (resp.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if go {
+                        let p = expand_tilde(&manual);
+                        if p.is_dir() {
+                            enter = Some(p);
+                        }
+                    }
+                });
+                if let Some(err) = &error {
+                    ui.colored_label(theme::DANGER, err);
+                }
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .max_height(240.0)
+                    .show(ui, |ui| {
+                        for dir in &dirs {
+                            let name = dir
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let clicked = ui
+                                .horizontal(|ui| {
+                                    icons::icon(
+                                        ui,
+                                        Icon::Folder,
+                                        14.0,
+                                        ui.visuals().weak_text_color(),
+                                    );
+                                    ui.add(egui::Button::new(name).frame(false)).clicked()
+                                })
+                                .inner;
+                            if clicked {
+                                enter = Some(dir.clone());
+                            }
+                        }
+                        if dirs.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(
+                                RichText::new(crate::tr!("No sub-folders here"))
+                                    .small()
+                                    .color(theme::TEXT_MUTED),
+                            );
+                        }
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let label = match mode {
+                        PortabilityMode::Export => crate::tr!("Export to this folder"),
+                        PortabilityMode::Import => crate::tr!("Import from this folder"),
+                    };
+                    if ui.button(label).clicked() {
+                        run = Some(current.clone());
+                    }
+                    if ui.button(crate::tr!("Cancel")).clicked() {
+                        close = true;
+                    }
+                });
+                if let Some(err) = &self.portability_error {
+                    ui.separator();
+                    ui.label(RichText::new(err).small().color(theme::DANGER));
+                }
+            });
+        if go_up || home || enter.is_some() {
+            if let Some((_, picker)) = self.portability.as_mut() {
+                picker.manual = manual;
+                if go_up {
+                    picker.go_up();
+                } else if home {
+                    if let Some(h) = std::env::var_os("HOME") {
+                        picker.enter(PathBuf::from(h));
+                    }
+                } else if let Some(p) = enter {
+                    picker.enter(p);
+                }
+            }
+        }
+        if let Some(dir) = run {
+            match mode {
+                PortabilityMode::Export => self.run_markdown_export(&dir),
+                PortabilityMode::Import => self.run_markdown_import(&dir),
+            }
+        } else if close || !open {
+            self.portability = None;
+            self.portability_error = None;
+        }
+    }
+
+    /// PDF / HTML / print export dialog for the active note.
+    fn print_dialog(&mut self, ctx: &egui::Context) {
+        if !self.print_open {
+            return;
+        }
+        let mut open = true;
+        let mut run = false;
+        let default = self
+            .tabs
+            .get(self.active)
+            .map(|t| {
+                format!(
+                    "{}/{}.html",
+                    std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+                    Vault::sanitize_name(&t.title)
+                )
+            })
+            .unwrap_or_default();
+        if self.print_target.trim().is_empty() {
+            self.print_target = default.clone();
+        }
+        egui::Window::new(crate::tr!("Export note"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(crate::tr!(
+                        "Writes a self-contained HTML file. Use .html to open it in the browser (print / Save as PDF), or .pdf to convert with wkhtmltopdf."
+                    ))
+                    .small()
+                    .color(theme::TEXT_MUTED),
+                );
+                ui.add_space(4.0);
+                ui.label(crate::tr!("Output file"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.print_target)
+                        .desired_width(f32::INFINITY),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button(crate::tr!("Choose…")).clicked() {
+                        self.print_target.clear();
+                        self.print_target = default.clone();
+                    }
+                    ui.checkbox(
+                        &mut self.print_use_browser,
+                        crate::tr!("Open in browser after export"),
+                    );
+                });
+                if let Some(err) = &self.print_error {
+                    ui.label(RichText::new(err).small().color(theme::DANGER));
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button(crate::tr!("Export")).clicked() {
+                        run = true;
+                    }
+                    if ui.button(crate::tr!("Cancel")).clicked() {
+                        self.print_open = false;
+                    }
+                });
+            });
+        if run {
+            self.run_print_export();
+        }
+        if !open {
+            self.print_open = false;
+        }
+    }
+
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.portability_dialog(ctx);
+        self.print_dialog(ctx);
         self.settings_dialog(ctx);
         self.composer_dialog(ctx);
         self.table_editor_dialog(ctx);
@@ -11162,6 +12087,11 @@ impl EncryptedNoteApp {
         if ctx.input_mut(|i| i.consume_shortcut(&open)) {
             self.open_picker();
         }
+        // Ctrl+Shift+R reloads the active note from disk.
+        let reload = egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::R);
+        if ctx.input_mut(|i| i.consume_shortcut(&reload)) {
+            self.reload_active_from_disk();
+        }
         // Ctrl+W closes the active tab.
         let close = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::W);
         if ctx.input_mut(|i| i.consume_shortcut(&close)) && !self.tabs.is_empty() {
@@ -11318,6 +12248,8 @@ impl eframe::App for EncryptedNoteApp {
         }
 
         self.handle_shortcuts(ctx);
+        let now = ctx.input(|i| i.time);
+        self.poll_external_changes(ctx, now);
         if let Some(text) = self.pending_clipboard.take() {
             ctx.copy_text(text);
         }
@@ -12429,6 +13361,338 @@ fn restrict_permissions(path: &Path) {
 }
 
 /// Expand a leading `~` to the user's home directory.
+/// Render a note's Markdown to a self-contained HTML document for printing,
+/// "Save as PDF" in the browser, or archiving.
+fn markdown_to_html(title: &str, raw: &str) -> String {
+    use std::fmt::Write;
+    let body = frontmatter::parse(raw).body;
+    let escaped_title = html_escape(title);
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n\
+         <title>{escaped_title}</title>\n\
+         <style>\n\
+         :root {{ color-scheme: light; }}\n\
+         body {{ font-family: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;\n\
+                max-width: 46rem; margin: 3rem auto; padding: 0 1.25rem;\n\
+                line-height: 1.65; color: #1f2329; background: #fff; }}\n\
+         h1, h2, h3, h4 {{ line-height: 1.25; margin: 1.6em 0 0.6em; }}\n\
+         h1 {{ font-size: 2em; border-bottom: 1px solid #e5e7eb; padding-bottom: .3em; }}\n\
+         h2 {{ font-size: 1.5em; border-bottom: 1px solid #f0f1f3; padding-bottom: .25em; }}\n\
+         code {{ font-family: 'JetBrains Mono', Consolas, monospace; font-size: .9em;\n\
+                 background: #f3f4f6; padding: .15em .35em; border-radius: 4px; }}\n\
+         pre {{ background: #f6f7f9; border: 1px solid #e5e7eb; border-radius: 8px;\n\
+                padding: .9rem 1rem; overflow-x: auto; }}\n\
+         pre code {{ background: none; padding: 0; }}\n\
+         blockquote {{ margin: 1em 0; padding: .4em 1em; border-left: 3px solid #c7d2fe;\n\
+                       background: #f8f9ff; color: #444a55; }}\n\
+         table {{ border-collapse: collapse; margin: 1.2em 0; width: 100%; }}\n\
+         th, td {{ border: 1px solid #e5e7eb; padding: .45em .7em; text-align: left; }}\n\
+         th {{ background: #f6f7f9; }}\n\
+         img {{ max-width: 100%; border-radius: 8px; }}\n\
+         mark {{ background: #fdf3a8; }}\n\
+         a {{ color: #3b5bdb; }}\n\
+         @media print {{ body {{ margin: 0; max-width: none; }} }}\n\
+         </style></head><body>\n",
+        escaped_title = escaped_title
+    );
+    let mut in_code = false;
+    let mut in_list = false;
+    let mut in_ul = false;
+    let mut in_ol = false;
+    let mut in_quote = false;
+    let lines: Vec<&str> = body.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let t = line.trim();
+        if t.starts_with("```") {
+            if in_code {
+                out.push_str("</code></pre>\n");
+            } else {
+                out.push_str("<pre><code>");
+            }
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if in_code {
+            out.push_str(&html_escape(line));
+            out.push('\n');
+            i += 1;
+            continue;
+        }
+        // Tables.
+        if t.starts_with('|') && i + 1 < lines.len() && is_table_sep_html(lines[i + 1]) {
+            out.push_str("<table>\n");
+            let header = table_cells(t);
+            out.push_str("<thead><tr>");
+            for c in &header {
+                let _ = write!(out, "<th>{}</th>", inline_html(c));
+            }
+            out.push_str("</tr></thead><tbody>\n");
+            i += 2;
+            while i < lines.len() && lines[i].trim().starts_with('|') {
+                out.push_str("<tr>");
+                for c in table_cells(lines[i].trim()) {
+                    let _ = write!(out, "<td>{}</td>", inline_html(&c));
+                }
+                out.push_str("</tr>\n");
+                i += 1;
+            }
+            out.push_str("</tbody></table>\n");
+            continue;
+        }
+        // Callouts become blockquotes with a label.
+        if t.starts_with("> [!") {
+            out.push_str("<blockquote>");
+            let label = t.trim_start_matches("> [").split(']').next().unwrap_or("");
+            let _ = write!(out, "<p><strong>{}</strong></p>", html_escape(label));
+            i += 1;
+            while i < lines.len() && lines[i].trim_start().starts_with('>') {
+                let inner = lines[i].trim_start().trim_start_matches('>').trim_start();
+                let _ = write!(out, "<p>{}</p>", inline_html(inner));
+                i += 1;
+            }
+            out.push_str("</blockquote>\n");
+            continue;
+        }
+        // Blockquote.
+        if let Some(rest) = t.strip_prefix("> ") {
+            if !in_quote {
+                out.push_str("<blockquote>\n");
+                in_quote = true;
+            }
+            let _ = write!(out, "<p>{}</p>", inline_html(rest));
+            i += 1;
+            // Close when the next line is not a quote.
+            if i >= lines.len() || !lines[i].trim_start().starts_with('>') {
+                out.push_str("</blockquote>\n");
+                in_quote = false;
+            }
+            continue;
+        }
+        if in_quote {
+            out.push_str("</blockquote>\n");
+            in_quote = false;
+        }
+        // Headings.
+        let hashes = t.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&hashes) && t.chars().nth(hashes) == Some(' ') {
+            let _ = writeln!(
+                out,
+                "<h{hashes}>{}</h{hashes}>",
+                inline_html(t[hashes + 1..].trim())
+            );
+            i += 1;
+            continue;
+        }
+        // Horizontal rule.
+        if matches!(t, "---" | "***" | "___") {
+            out.push_str("<hr>\n");
+            i += 1;
+            continue;
+        }
+        // Task list.
+        let lower = t.to_ascii_lowercase();
+        if lower.starts_with("- [ ] ") || lower.starts_with("- [x] ") {
+            let done = lower.starts_with("- [x] ");
+            if !in_list {
+                out.push_str("<ul class=\"tasks\">\n");
+                in_list = true;
+                in_ul = true;
+            }
+            let _ = writeln!(
+                out,
+                "<li><input type=\"checkbox\" disabled{}> {}</li>",
+                if done { " checked" } else { "" },
+                inline_html(t[6..].trim())
+            );
+            i += 1;
+            continue;
+        }
+        // Unordered list.
+        if let Some(rest) = t
+            .strip_prefix("- ")
+            .or_else(|| t.strip_prefix("* "))
+            .or_else(|| t.strip_prefix("+ "))
+        {
+            if !in_ul {
+                out.push_str("<ul>\n");
+                in_ul = true;
+                in_list = true;
+            }
+            let _ = writeln!(out, "<li>{}</li>", inline_html(rest.trim()));
+            i += 1;
+            continue;
+        }
+        // Ordered list.
+        let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !digits.is_empty() && t[digits.len()..].starts_with(". ") {
+            if !in_ol {
+                out.push_str("<ol>\n");
+                in_ol = true;
+                in_list = true;
+            }
+            let _ = writeln!(
+                out,
+                "<li>{}</li>",
+                inline_html(t[digits.len() + 2..].trim())
+            );
+            i += 1;
+            continue;
+        }
+        // Close any open list when a non-list line appears.
+        if in_list {
+            if in_ul {
+                out.push_str("</ul>\n");
+                in_ul = false;
+            }
+            if in_ol {
+                out.push_str("</ol>\n");
+                in_ol = false;
+            }
+            in_list = false;
+        }
+        if t.is_empty() {
+            i += 1;
+            continue;
+        }
+        let _ = writeln!(out, "<p>{}</p>", inline_html(t));
+        i += 1;
+    }
+    if in_code {
+        out.push_str("</code></pre>\n");
+    }
+    if in_ul {
+        out.push_str("</ul>\n");
+    }
+    if in_ol {
+        out.push_str("</ol>\n");
+    }
+    if in_quote {
+        out.push_str("</blockquote>\n");
+    }
+    out.push_str("</body></html>\n");
+    out
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn is_table_sep_html(line: &str) -> bool {
+    let cells: Vec<&str> = line
+        .trim()
+        .trim_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect();
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let c = c.trim_matches(':').trim();
+            c.len() >= 2 && c.chars().all(|ch| ch == '-')
+        })
+}
+
+fn table_cells(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
+/// Inline Markdown → HTML (bold, italic, strike, code, highlight, links,
+/// wikilinks rendered as plain text, images).
+fn inline_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    let mut buf = String::new();
+    let flush = |buf: &mut String, out: &mut String| {
+        if !buf.is_empty() {
+            out.push_str(&html_escape(buf));
+            buf.clear();
+        }
+    };
+    while i < chars.len() {
+        let rest: String = chars[i..].iter().take(24).collect();
+        // Images: ![alt](src)
+        if rest.starts_with("![") {
+            if let Some(close) = rest.find("](") {
+                if let Some(end) = rest[close + 2..].find(')') {
+                    let alt = &rest[2..close];
+                    let src = &rest[close + 2..close + 2 + end];
+                    flush(&mut buf, &mut out);
+                    out.push_str(&format!(
+                        "<img alt=\"{}\" src=\"{}\">",
+                        html_escape(alt),
+                        html_escape(src)
+                    ));
+                    i += close + 2 + end + 1;
+                    continue;
+                }
+            }
+        }
+        // Links: [text](url)
+        if rest.starts_with('[') {
+            if let Some(close) = rest.find("](") {
+                if let Some(end) = rest[close + 2..].find(')') {
+                    let text = &rest[1..close];
+                    let url = &rest[close + 2..close + 2 + end];
+                    flush(&mut buf, &mut out);
+                    out.push_str(&format!(
+                        "<a href=\"{}\">{}</a>",
+                        html_escape(url),
+                        inline_html(text)
+                    ));
+                    i += close + 2 + end + 1;
+                    continue;
+                }
+            }
+        }
+        // Bold / italic / strike / highlight / code.
+        let (open, close) = if rest.starts_with("**") {
+            ("<strong>", "</strong>")
+        } else if rest.starts_with("~~") {
+            ("<del>", "</del>")
+        } else if rest.starts_with("==") {
+            ("<mark>", "</mark>")
+        } else if rest.starts_with('`') {
+            ("<code>", "</code>")
+        } else if rest.starts_with('*') || rest.starts_with('_') {
+            ("<em>", "</em>")
+        } else {
+            ("", "")
+        };
+        if !open.is_empty() {
+            let marker: String = if open == "<strong>" || open == "<del>" || open == "<mark>" {
+                rest[..2].to_string()
+            } else {
+                rest[..1].to_string()
+            };
+            if let Some(pos) = rest[marker.len()..].find(&marker) {
+                let inner = &rest[marker.len()..marker.len() + pos];
+                flush(&mut buf, &mut out);
+                out.push_str(open);
+                out.push_str(&inline_html(inner));
+                out.push_str(close);
+                i += marker.len() + pos + marker.len();
+                continue;
+            }
+        }
+        buf.push(chars[i]);
+        i += 1;
+    }
+    flush(&mut buf, &mut out);
+    out
+}
+
 fn expand_tilde(path: &str) -> PathBuf {
     let path = path.trim();
     if let Some(rest) = path.strip_prefix("~/") {

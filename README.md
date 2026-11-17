@@ -313,6 +313,68 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
 - **Linked second pane** — with *Toggle linked second pane*, wikilinks clicked
   in the first pane open in the second one (Obsidian's linked view).
 
+## Portability & interop
+
+- **Plain-Markdown export** — *Export vault as plain Markdown…* writes every
+  decrypted note as an ordinary `.md` file (same folder layout) plus its
+  `assets/` attachments into a folder you choose. The encrypted vault is not
+  modified, so the notes become readable by Obsidian, VS Code, `grep`, Git…
+- **Markdown / Obsidian import** — *Import Markdown / Obsidian vault…* scans a
+  folder, copies every `.md` and attachment into the vault and encrypts it
+  there. It is **additive and non-destructive**: the source folder is never
+  modified, and name clashes become `Note (1).md`. Already-encrypted notes are
+  decrypted first, so importing an Encrypted Note vault works too.
+- **HTML / PDF / print export** — *Export current note (PDF / HTML / print)…*
+  writes a self-contained HTML file (styled, with tables, code, callouts,
+  highlights and images) and opens it in the browser for printing or "Save as
+  PDF"; a `.pdf` target is converted with `wkhtmltopdf` when available.
+
+## Live vault
+
+- **External change watching** — the vault is polled (mtime + size, no inotify
+  dependency) every ~1.2 s. Notes changed by another program are reloaded
+  automatically; new/removed notes refresh the tree and index. If a note has
+  **unsaved edits** the app keeps your buffer, flags a conflict and shows a
+  status hint — `Ctrl+Shift+R` reloads from disk. Toggle in Settings.
+
+## Free panel layout
+
+- **Stacked tabs** — a vertical column of full-width tab rows (Settings or the
+  *Toggle stacked tabs* command) instead of the horizontal strip.
+- **Independent views** — *Open current note in a new view* opens the same note
+  twice, each with its own view mode, scroll position and caret.
+- **Drag tabs between panes** — drag a tab in the strip to move it into the
+  second pane; drag a pane tab back to return it to the main pane.
+
+## Advanced math
+
+`\colorbox{…}{…}` / `\fcolorbox`, `\underbrace{…}_{…}`, `\overbrace{…}^{…}`,
+`\stackrel{…}{…}`, `\binom`, and the `gathered`/`alignat`/`flalign`/
+`subequations`/`smallmatrix`/`Vmatrix` environments. Cleveref-style references:
+`\cref{a,b}` → `(1, 2)`, `\Cref{a}` → `Eq. (1)` (localised), `\crefrange{a}{b}`
+→ `(1)–(2)`, `\labelcref`, `\cpageref`.
+
+## Dataview & Bases
+
+- **Wider function set** — `date`, `year`, `month`, `day`, `weekday`, `reldate`,
+  `dateformat`/`format`, `number`, `floor`, `ceil`, `abs`, `mod`, `replace`,
+  `substring`, `split`, `join`, `unique`, `count`, `truncate`, `pad`,
+  `striptime`, `coalesce`/`nonnull`, `length`, `upper`, `lower`, `contains`,
+  `startswith`, `endswith`, `round`, `default`, `sum`, `min`, `max`.
+- **Card view** — add `view cards` to a `table` query for a **Bases-style grid
+  of cards** (title + field rows) instead of a table.
+
+## Canvas
+
+- **Directional links** — edges carry an `arrow` flag (on by default) and honour
+  `fromSide`/`toSide` anchors; right-click a connector to **toggle the
+  arrowhead** or **reverse its direction**.
+- **PDF cards** — show a real page preview with `‹ p.N ›` paging controls (each
+  page rendered by `pdftoppm` and cached); double-click opens the PDF at that
+  page in the system viewer.
+- **Web cards** — fetch the page title/description and open the URL on
+  double-click (a web *view* still requires the system browser).
+
 ### Not implemented (yet)
 
 The markdown/visualisation gap list is closed: real LaTeX (with numbered

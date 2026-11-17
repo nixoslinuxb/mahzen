@@ -23,6 +23,7 @@ mod media;
 mod mermaid;
 mod palette;
 mod passwords;
+mod portability;
 mod query;
 mod search;
 mod spell;
@@ -30,6 +31,7 @@ mod system_clipboard;
 mod theme;
 mod vault;
 mod vim;
+mod watch;
 
 use eframe::egui;
 

@@ -60,6 +60,8 @@ struct Query {
     limit: usize,
     flatten: Option<String>,
     group_by: Option<String>,
+    /// Bases-style presentation: a plain table or a grid of cards.
+    cards: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +146,10 @@ fn eval(doc: &Doc, expr: &str, group: Option<usize>) -> String {
     if let Some(inner) = e.strip_prefix('(').and_then(|x| x.strip_suffix(')')) {
         return eval(doc, inner, group);
     }
+    // Numeric literals (and signed ones) evaluate to themselves.
+    if e.trim().parse::<f64>().is_ok() {
+        return e.trim().to_string();
+    }
     // Function call.
     if let Some(open) = e.find('(') {
         if e.ends_with(')') {
@@ -190,7 +196,155 @@ fn eval(doc: &Doc, expr: &str, group: Option<usize>) -> String {
                         v
                     }
                 }
-                "dateformat" => crate::dates::reformat(&arg(0), &arg(1)),
+                "dateformat" | "format" => crate::dates::reformat(&arg(0), &arg(1)),
+                "date" => {
+                    // Normalise anything date-like to YYYY-MM-DD.
+                    let v = arg(0);
+                    if v.trim().eq_ignore_ascii_case("today") {
+                        let (y, m, d) = crate::dates::today();
+                        format!("{y:04}-{m:02}-{d:02}")
+                    } else if let Some((y, m, d)) = crate::dates::parse_iso(&v) {
+                        format!("{y:04}-{m:02}-{d:02}")
+                    } else {
+                        v
+                    }
+                }
+                "year" | "month" | "day" => {
+                    let v = arg(0);
+                    match crate::dates::parse_iso(&v) {
+                        Some((y, m, d)) => match name.as_str() {
+                            "year" => y.to_string(),
+                            "month" => m.to_string(),
+                            _ => d.to_string(),
+                        },
+                        None => String::new(),
+                    }
+                }
+                "weekday" => {
+                    let v = arg(0);
+                    match crate::dates::parse_iso(&v) {
+                        Some((y, m, d)) => crate::dates::WEEKDAY_NAMES
+                            [crate::dates::weekday(y, m, d) % 7]
+                            .to_string(),
+                        None => String::new(),
+                    }
+                }
+                "reldate" => {
+                    // Whole days between the value and today ("2 days ago").
+                    let v = arg(0);
+                    match crate::dates::parse_iso(&v) {
+                        Some((y, m, d)) => {
+                            let then = crate::dates::days_from_civil(y, m, d);
+                            let (ty, tm, td) = crate::dates::today();
+                            let now = crate::dates::days_from_civil(ty, tm, td);
+                            let diff = now - then;
+                            match diff {
+                                0 => crate::tr!("today").to_string(),
+                                1 => crate::tr!("yesterday").to_string(),
+                                -1 => crate::tr!("tomorrow").to_string(),
+                                n if n > 1 => crate::tr!("{} days ago", n),
+                                n => crate::tr!("in {} days", -n),
+                            }
+                        }
+                        None => String::new(),
+                    }
+                }
+                "number" | "toNumber" => {
+                    let v = arg(0);
+                    match v.trim().parse::<f64>() {
+                        Ok(n) => format!("{n}"),
+                        Err(_) => "0".into(),
+                    }
+                }
+                "floor" => arg(0)
+                    .trim()
+                    .parse::<f64>()
+                    .map(|n| format!("{}", n.floor()))
+                    .unwrap_or_default(),
+                "ceil" => arg(0)
+                    .trim()
+                    .parse::<f64>()
+                    .map(|n| format!("{}", n.ceil()))
+                    .unwrap_or_default(),
+                "abs" => arg(0)
+                    .trim()
+                    .parse::<f64>()
+                    .map(|n| format!("{}", n.abs()))
+                    .unwrap_or_default(),
+                "mod" => {
+                    let a: f64 = arg(0).trim().parse().unwrap_or(0.0);
+                    let b: f64 = arg(1).trim().parse().unwrap_or(1.0);
+                    if b == 0.0 {
+                        "0".into()
+                    } else {
+                        format!("{}", a % b)
+                    }
+                }
+                "replace" => arg(0).replace(&arg(1), &arg(2)),
+                "substring" | "substr" => {
+                    let s = arg(0);
+                    let start: usize = raw(1).trim().parse().unwrap_or(0);
+                    let len: Option<usize> = raw(2).trim().parse().ok();
+                    s.chars()
+                        .skip(start)
+                        .take(len.unwrap_or(usize::MAX))
+                        .collect()
+                }
+                "split" => {
+                    let s = arg(0);
+                    let sep = arg(1);
+                    s.split(&sep)
+                        .map(str::trim)
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+                "join" => arg(0)
+                    .split(',')
+                    .map(str::trim)
+                    .collect::<Vec<_>>()
+                    .join(&arg(1)),
+                "unique" => {
+                    let mut seen: Vec<String> = Vec::new();
+                    for part in arg(0).split(',') {
+                        let p = part.trim().to_string();
+                        if !p.is_empty() && !seen.contains(&p) {
+                            seen.push(p);
+                        }
+                    }
+                    seen.join(", ")
+                }
+                "count" => arg(0)
+                    .split(',')
+                    .filter(|p| !p.trim().is_empty())
+                    .count()
+                    .to_string(),
+                "truncate" => {
+                    let s = arg(0);
+                    let n: usize = raw(1).trim().parse().unwrap_or(40);
+                    if s.chars().count() <= n {
+                        s
+                    } else {
+                        let mut t: String = s.chars().take(n).collect();
+                        t.push('…');
+                        t
+                    }
+                }
+                "pad" => {
+                    let s = arg(0);
+                    let n: usize = raw(1).trim().parse().unwrap_or(8);
+                    format!("{s:0>n$}")
+                }
+                "striptime" => arg(0).split('T').next().unwrap_or("").to_string(),
+                "nonnull" | "coalesce" => {
+                    for i in 0..args.len() {
+                        let v = arg(i);
+                        if !v.trim().is_empty() {
+                            return v;
+                        }
+                    }
+                    String::new()
+                }
                 "sum" => {
                     let vals: Vec<f64> = arg(0)
                         .split(',')
@@ -235,6 +389,7 @@ fn parse(src: &str) -> Query {
         limit: usize::MAX,
         flatten: None,
         group_by: None,
+        cards: false,
     };
     for raw in src.lines() {
         let line = raw.trim();
@@ -298,6 +453,11 @@ fn parse(src: &str) -> Query {
                         q.from.push(v);
                     }
                 }
+            }
+            "view" => {
+                q.cards = rest.trim().eq_ignore_ascii_case("cards")
+                    || rest.trim().eq_ignore_ascii_case("card")
+                    || rest.trim().eq_ignore_ascii_case("grid");
             }
             "where" => {
                 if let Some(c) = parse_clause(rest) {
@@ -578,6 +738,63 @@ pub fn render(ui: &mut egui::Ui, src: &str, docs: &[Doc]) -> bool {
             });
             ui.separator();
             match q.mode {
+                Mode::Table if q.cards => {
+                    // Bases-style card grid: one card per row of results.
+                    let avail = ui.available_width().max(200.0);
+                    let card_w = 240.0f32;
+                    let per_row = ((avail / (card_w + 12.0)).floor() as usize).max(1);
+                    let items: Vec<&Row> = if q.group_by.is_some() {
+                        Vec::new()
+                    } else {
+                        rows.iter().collect()
+                    };
+                    egui::ScrollArea::vertical()
+                        .max_height(520.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            let mut idx = 0usize;
+                            while idx < items.len() {
+                                ui.horizontal_top(|ui| {
+                                    for r in items.iter().skip(idx).take(per_row) {
+                                        egui::Frame::none()
+                                            .fill(ui.visuals().extreme_bg_color)
+                                            .stroke(egui::Stroke::new(
+                                                1.0_f32,
+                                                ui.visuals().hyperlink_color.linear_multiply(0.3),
+                                            ))
+                                            .rounding(egui::Rounding::same(6.0))
+                                            .inner_margin(egui::Margin::same(10.0))
+                                            .show(ui, |ui| {
+                                                ui.set_width(card_w - 20.0);
+                                                query_card_title(ui, r, &q);
+                                                ui.add_space(4.0);
+                                                for c in q.columns.iter().skip(1) {
+                                                    let v = r.eval(&c.expr, None);
+                                                    if v.trim().is_empty() {
+                                                        continue;
+                                                    }
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new(&c.alias)
+                                                                .size(9.5)
+                                                                .color(
+                                                                    ui.visuals().weak_text_color(),
+                                                                ),
+                                                        );
+                                                        ui.label(
+                                                            RichText::new(ellipsize(&v, 34))
+                                                                .size(10.5),
+                                                        );
+                                                    });
+                                                }
+                                            });
+                                        ui.add_space(4.0);
+                                    }
+                                });
+                                idx += per_row;
+                            }
+                        });
+                }
                 Mode::Table => {
                     egui::ScrollArea::horizontal().show(ui, |ui| {
                         egui::Grid::new(("query-grid", src.as_ptr() as usize))
@@ -643,6 +860,31 @@ pub fn render(ui: &mut egui::Ui, src: &str, docs: &[Doc]) -> bool {
     true
 }
 
+/// Card title: the first column's value, falling back to the note title.
+fn query_card_title(ui: &mut egui::Ui, r: &Row, q: &Query) {
+    let first = q
+        .columns
+        .first()
+        .map(|c| r.eval(&c.expr, None))
+        .unwrap_or_default();
+    let title = if first.trim().is_empty() {
+        r.doc.title.clone()
+    } else {
+        first
+    };
+    ui.label(RichText::new(ellipsize(&title, 32)).small().strong());
+}
+
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,6 +939,39 @@ mod tests {
         assert_eq!(titles("list title\nwhere status = active"), vec!["Alpha"]);
         assert_eq!(titles("list title\nwhere status = done"), vec!["Beta"]);
         assert_eq!(titles("list title\nsort title desc"), vec!["Beta", "Alpha"]);
+    }
+
+    #[test]
+    fn extended_functions_and_dates() {
+        let docs = sample();
+        let d = &docs[0];
+        assert_eq!(eval(d, "upper(title)", None), "ALPHA");
+        assert_eq!(eval(d, "truncate(title, 2)", None), "Al…");
+        assert_eq!(eval(d, "number(\"12\")", None), "12");
+        assert_eq!(eval(d, "mod(7, 4)", None), "3");
+        assert_eq!(eval(d, "replace(title, \"A\", \"B\")", None), "Blpha");
+        assert_eq!(eval(d, "count(\"a,b,c\")", None), "3");
+        assert_eq!(eval(d, "unique(\"a,b,a\")", None), "a, b");
+        assert_eq!(eval(d, "pad(7, 3)", None), "007");
+        assert_eq!(eval(d, "date(\"2024-03-05T10:00\")", None), "2024-03-05");
+        assert_eq!(eval(d, "year(\"2024-03-05\")", None), "2024");
+        assert_eq!(eval(d, "month(\"2024-03-05\")", None), "3");
+        assert_eq!(eval(d, "day(\"2024-03-05\")", None), "5");
+        assert_eq!(eval(d, "weekday(\"2024-03-05\")", None), "Tuesday");
+        assert_eq!(
+            eval(d, "dateformat(\"2024-03-05\", \"YYYY/MM\")", None),
+            "2024/03"
+        );
+        assert!(eval(d, "reldate(\"2024-03-05\")", None).contains(' '));
+        assert_eq!(eval(d, "coalesce(\"\", \"x\")", None), "x");
+    }
+
+    #[test]
+    fn card_view_is_parsed() {
+        let q = parse("table title, tags\nview cards");
+        assert!(q.cards);
+        let q = parse("table title");
+        assert!(!q.cards);
     }
 
     #[test]

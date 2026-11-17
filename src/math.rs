@@ -319,6 +319,16 @@ enum Ast {
     Strike(Box<Ast>),
     /// A filled frame around the expression (`\boxed`).
     Boxed(Box<Ast>),
+    /// A coloured background (`\colorbox{name}{…}`, `\fcolorbox`).
+    ColorBox(egui::Color32, Box<Ast>),
+    /// A brace under the expression with a label (`\underbrace{…}_{…}`).
+    UnderBrace(Box<Ast>, Option<Box<Ast>>),
+    /// A brace over the expression with a label (`\overbrace{…}^{…}`).
+    OverBrace(Box<Ast>, Option<Box<Ast>>),
+    /// Stacked text: `\stackrel{top}{base}`.
+    Stack(Box<Ast>, Box<Ast>),
+    /// `\genfrac`-style delimiter pair around a fraction (inom).
+    Binom(Box<Ast>, Box<Ast>),
 }
 
 /// Horizontal alignment of an `array` column.
@@ -515,6 +525,16 @@ impl<'a> Parser<'a> {
         if let Ast::BigOp(ch, _, _) = &base {
             return Ast::BigOp(ch.clone(), sub, sup);
         }
+        // \underbrace{…}_{label} / \overbrace{…}^{label}
+        match base {
+            Ast::UnderBrace(body, _) if sub.is_some() => {
+                return Ast::UnderBrace(body, sub);
+            }
+            Ast::OverBrace(body, _) if sup.is_some() => {
+                return Ast::OverBrace(body, sup);
+            }
+            _ => {}
+        }
         if let Ast::Row(items) = &base {
             if let Some(Ast::BigOp(ch, _, _)) = items.last() {
                 let ch = ch.clone();
@@ -710,7 +730,7 @@ impl<'a> Parser<'a> {
                 Ast::Text(s)
             }
             "mathbb" | "mathcal" | "mathbf" | "mathit" | "boldsymbol" => self.parse_group(),
-            "textcolor" | "colorbox" => {
+            "textcolor" => {
                 let name = self.color_arg();
                 let body = self.parse_group();
                 Ast::Color(latex_color(&name), Box::new(body))
@@ -725,6 +745,30 @@ impl<'a> Parser<'a> {
             "xcancel" => Ast::Cancel(Box::new(self.parse_group()), true, true),
             "sout" => Ast::Strike(Box::new(self.parse_group())),
             "boxed" | "fbox" => Ast::Boxed(Box::new(self.parse_group())),
+            "colorbox" => {
+                let name = self.color_arg();
+                let body = self.parse_group();
+                Ast::ColorBox(latex_color(&name), Box::new(body))
+            }
+            "fcolorbox" => {
+                // \fcolorbox{frame}{background}{content}: use the background.
+                let _frame = self.color_arg();
+                let bg = self.color_arg();
+                let body = self.parse_group();
+                Ast::ColorBox(latex_color(&bg), Box::new(body))
+            }
+            "underbrace" => Ast::UnderBrace(Box::new(self.parse_group()), None),
+            "overbrace" => Ast::OverBrace(Box::new(self.parse_group()), None),
+            "stackrel" => {
+                let top = self.parse_group();
+                let base = self.parse_group();
+                Ast::Stack(Box::new(top), Box::new(base))
+            }
+            "binom" | "dbinom" | "tbinom" => {
+                let n = self.parse_group();
+                let k = self.parse_group();
+                Ast::Binom(Box::new(n), Box::new(k))
+            }
             "overline" | "bar" => Ast::Accent(Box::new(self.parse_group()), '-'),
             "hat" | "widehat" => Ast::Accent(Box::new(self.parse_group()), '^'),
             "vec" | "overrightarrow" => Ast::Accent(Box::new(self.parse_group()), '→'),
@@ -766,7 +810,11 @@ impl<'a> Parser<'a> {
                     "Bmatrix" => MatrixKind::Brace,
                     "vmatrix" => MatrixKind::Bar,
                     "aligned" | "align" | "align*" | "gather" | "gather*" | "split"
-                    | "multline" | "multline*" => MatrixKind::Aligned,
+                    | "multline" | "multline*" | "alignat" | "alignat*" | "flalign"
+                    | "flalign*" | "gathered" | "subequations" | "smallmatrix" => {
+                        MatrixKind::Aligned
+                    }
+                    "Vmatrix" => MatrixKind::Bar,
                     "equation" | "equation*" => MatrixKind::Plain,
                     "array" => MatrixKind::Plain,
                     "cases" => MatrixKind::Cases,
@@ -850,6 +898,8 @@ enum MItem {
         ascent: f32,
         /// Per-item colour override (`\textcolor{…}`); `None` = default.
         color: Option<egui::Color32>,
+        /// Per-item background (`\colorbox{…}`); `None` = transparent.
+        bg: Option<egui::Color32>,
     },
     Rule {
         x: f32,
@@ -900,6 +950,7 @@ fn glyph_colored(
         dy: 0.0,
         ascent: asc,
         color,
+        bg: None,
     };
     (item, w, asc)
 }
@@ -1238,6 +1289,138 @@ fn layout_ast(ui: &egui::Ui, ast: &Ast, size: f32, display: bool) -> MathLayout 
             l.descent = d + pad;
             l
         }
+        Ast::ColorBox(bg, body) => {
+            let mut l = layout_ast(ui, body, size, display);
+            let pad = size * 0.16;
+            for item in &mut l.items {
+                if let MItem::Glyph { bg: b, .. } = item {
+                    *b = Some(*bg);
+                }
+            }
+            for item in &mut l.items {
+                shift_item(item, pad, 0.0);
+            }
+            l.width += pad * 2.0;
+            l
+        }
+        Ast::UnderBrace(body, label) => {
+            let mut b = layout_ast(ui, body, size, display);
+            let w = b.width;
+            let d = b.descent;
+            let thick = (size * 0.05).max(1.0);
+            let color = crate::theme::TEXT_MUTED;
+            let y = d + size * 0.16;
+            let mid = w / 2.0;
+            b.items.push(MItem::Line {
+                p1: egui::pos2(0.0, y - size * 0.10),
+                p2: egui::pos2(0.0, y),
+                thick,
+                color,
+            });
+            b.items.push(MItem::Line {
+                p1: egui::pos2(0.0, y),
+                p2: egui::pos2(w, y),
+                thick,
+                color,
+            });
+            b.items.push(MItem::Line {
+                p1: egui::pos2(w, y),
+                p2: egui::pos2(w, y - size * 0.10),
+                thick,
+                color,
+            });
+            b.items.push(MItem::Line {
+                p1: egui::pos2(mid, y),
+                p2: egui::pos2(mid, y + size * 0.10),
+                thick,
+                color,
+            });
+            b.descent = d + size * 0.30;
+            if let Some(lab) = label {
+                let mut l = layout_ast(ui, lab, size * 0.75, false);
+                let lw = l.width;
+                let la = l.ascent;
+                shift(&mut l, (w - lw) / 2.0, d + size * 0.30 + la);
+                b.descent = d + size * 0.30 + la + l.descent;
+                b.items.extend(l.items);
+            }
+            b
+        }
+        Ast::OverBrace(body, label) => {
+            let mut b = layout_ast(ui, body, size, display);
+            let w = b.width;
+            let a = b.ascent;
+            let thick = (size * 0.05).max(1.0);
+            let color = crate::theme::TEXT_MUTED;
+            let y = -a - size * 0.16;
+            let mid = w / 2.0;
+            for (p1, p2) in [
+                (egui::pos2(0.0, y + size * 0.10), egui::pos2(0.0, y)),
+                (egui::pos2(0.0, y), egui::pos2(w, y)),
+                (egui::pos2(w, y), egui::pos2(w, y + size * 0.10)),
+                (egui::pos2(mid, y), egui::pos2(mid, y - size * 0.10)),
+            ] {
+                b.items.push(MItem::Line {
+                    p1,
+                    p2,
+                    thick,
+                    color,
+                });
+            }
+            let mut extra = size * 0.30;
+            if let Some(lab) = label {
+                let mut l = layout_ast(ui, lab, size * 0.75, false);
+                let lw = l.width;
+                let ld = l.descent;
+                shift(&mut l, (w - lw) / 2.0, y - size * 0.10 - ld);
+                extra += l.ascent + l.descent;
+                b.items.extend(l.items);
+            }
+            b.ascent = a + extra;
+            b
+        }
+        Ast::Stack(top, base) => {
+            let mut t = layout_ast(ui, top, size * 0.72, false);
+            let mut b = layout_ast(ui, base, size, display);
+            let w = t.width.max(b.width);
+            let ta = t.ascent;
+            let td = t.descent;
+            let tw = t.width;
+            let bw = b.width;
+            shift(&mut t, (w - tw) / 2.0, -(b.ascent + td));
+            shift(&mut b, (w - bw) / 2.0, 0.0);
+            let mut out = empty();
+            out.width = w;
+            out.ascent = b.ascent + ta + td;
+            out.descent = b.descent;
+            out.items.extend(t.items);
+            out.items.extend(b.items);
+            out
+        }
+        Ast::Binom(n, k) => {
+            let frac = Ast::Frac(n.clone(), k.clone());
+            let mut l = layout_ast(ui, &frac, size, display);
+            l.items.retain(|item| !matches!(item, MItem::Rule { .. }));
+            let h = (l.ascent + l.descent).max(size);
+            let dsize = (h / 0.9).max(size);
+            let left = layout_glyph(ui, "(", dsize, false);
+            let right = layout_glyph(ui, ")", dsize, false);
+            let lw = left.width;
+            let rw = right.width;
+            let mut out = empty();
+            let mut lft = left;
+            let mut rgt = right;
+            shift(&mut lft, 0.0, (l.descent - l.ascent) / 2.0);
+            shift(&mut l, lw, 0.0);
+            shift(&mut rgt, lw + l.width, (l.descent - l.ascent) / 2.0);
+            out.width = lw + l.width + rw;
+            out.ascent = (h / 2.0 + size * 0.06).max(l.ascent);
+            out.descent = (h / 2.0 + size * 0.06).max(l.descent);
+            out.items.extend(lft.items);
+            out.items.extend(l.items);
+            out.items.extend(rgt.items);
+            out
+        }
         Ast::Matrix(rows, kind, aligns) => layout_matrix(ui, rows, *kind, aligns, size, display),
         Ast::Accent(body, ch) => {
             let b = layout_ast(ui, body, size, display);
@@ -1402,8 +1585,12 @@ pub fn paint_math(
                 dy,
                 ascent,
                 color: item_color,
+                bg,
             } => {
                 let pos = egui::pos2(rect.min.x + x, baseline + dy - ascent);
+                if let Some(bg) = bg {
+                    painter.rect_filled(egui::Rect::from_min_size(pos, galley.size()), 2.0, *bg);
+                }
                 painter.galley(pos, galley.clone(), item_color.unwrap_or(color));
             }
             MItem::Rule {
@@ -1478,6 +1665,28 @@ mod tests {
             Ast::Row(items) => assert!(items.iter().any(|i| matches!(i, Ast::Color(..)))),
             other => panic!("expected a row, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_extra_commands() {
+        assert!(matches!(
+            parse_ast(r"\colorbox{yellow}{x}"),
+            Ast::ColorBox(..)
+        ));
+        assert!(matches!(
+            parse_ast(r"\underbrace{a+b}_{n}"),
+            Ast::UnderBrace(_, Some(_))
+        ));
+        assert!(matches!(
+            parse_ast(r"\overbrace{a+b}^{n}"),
+            Ast::OverBrace(_, Some(_))
+        ));
+        assert!(matches!(parse_ast(r"\stackrel{def}{=}"), Ast::Stack(..)));
+        assert!(matches!(parse_ast(r"\binom{n}{k}"), Ast::Binom(..)));
+        assert!(matches!(
+            parse_ast(r"\begin{gathered} a \\ b \end{gathered}"),
+            Ast::Matrix(..)
+        ));
     }
 
     #[test]

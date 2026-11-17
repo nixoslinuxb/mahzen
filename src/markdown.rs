@@ -44,6 +44,14 @@ fn take_label(tex: &mut String, number: usize) {
 
 /// Replace `\ref{name}` with the recorded equation number.
 fn expand_refs(tex: &mut String) {
+    // cleveref-style commands first (longest names first so `\\crefrange`
+    // is not mistaken for `\\cref`).
+    expand_multi_ref(tex, "\\crefrange", RefStyle::Range);
+    expand_multi_ref(tex, "\\Crefrange", RefStyle::Range);
+    expand_multi_ref(tex, "\\cpageref", RefStyle::Plain);
+    expand_multi_ref(tex, "\\Cref", RefStyle::Named);
+    expand_multi_ref(tex, "\\cref", RefStyle::Plain);
+    expand_multi_ref(tex, "\\labelcref", RefStyle::Plain);
     for cmd in ["\\eqref", "\\autoref", "\\ref"] {
         let paren = cmd != "\\ref";
         let open = format!("{cmd}{{");
@@ -57,6 +65,82 @@ fn expand_refs(tex: &mut String) {
             let repl = if paren { format!("({num})") } else { num };
             tex.replace_range(start..start + end + 1, &repl);
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RefStyle {
+    /// `(1)`, `(1, 2)`.
+    Plain,
+    /// `Eq. (1)`, `Eq. (1, 2)`.
+    Named,
+    /// `(1)–(3)` for `\\crefrange{a}{b}`.
+    Range,
+}
+
+fn label_number(name: &str) -> String {
+    EQ_LABELS.with(|m| {
+        m.borrow()
+            .get(name.trim())
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "??".into())
+    })
+}
+
+/// Expand `\\cref{a,b}`-style commands. `Range` takes two braced arguments.
+fn expand_multi_ref(tex: &mut String, cmd: &str, style: RefStyle) {
+    let open = format!("{cmd}{{");
+    while let Some(start) = tex.find(&open) {
+        let Some(end) = tex[start..].find('}') else {
+            break;
+        };
+        let body = tex[start + open.len()..start + end].to_string();
+        let mut replaced_end = start + end + 1;
+        // `\\crefrange{a}{b}` reads a second brace group.
+        let second = if matches!(style, RefStyle::Range) {
+            let rest = &tex[replaced_end..];
+            if let Some(open2) = rest.strip_prefix('{') {
+                if let Some(close2) = open2.find('}') {
+                    let value = open2[..close2].to_string();
+                    replaced_end += close2 + 2;
+                    Some(value)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let repl = match style {
+            RefStyle::Range => {
+                let first = label_number(body.split(',').next().unwrap_or(""));
+                let last = second.as_deref().map(label_number).unwrap_or_default();
+                if last.is_empty() {
+                    format!("({first})")
+                } else {
+                    format!("({first})–({last})")
+                }
+            }
+            RefStyle::Plain | RefStyle::Named => {
+                let nums: Vec<String> = body.split(',').map(label_number).collect();
+                let list = nums.join(", ");
+                match style {
+                    RefStyle::Named => format!("{} ({list})", tr_eq_ref()),
+                    _ => format!("({list})"),
+                }
+            }
+        };
+        tex.replace_range(start..replaced_end, &repl);
+    }
+}
+
+/// The word used by `\\Cref` (localised).
+fn tr_eq_ref() -> &'static str {
+    match crate::i18n::current() {
+        crate::i18n::Lang::Tr => "Eş.",
+        _ => "Eq.",
     }
 }
 
@@ -1778,6 +1862,23 @@ mod tests {
         let mut missing = "\\eqref{nope}".to_string();
         expand_refs(&mut missing);
         assert_eq!(missing, "(??)");
+        reset_equations();
+    }
+
+    #[test]
+    fn cleveref_commands_expand() {
+        reset_equations();
+        take_label(&mut "\\label{a}".to_string(), next_equation());
+        take_label(&mut "\\label{b}".to_string(), next_equation());
+        let mut t = "\\cref{a,b}".to_string();
+        expand_refs(&mut t);
+        assert_eq!(t, "(1, 2)");
+        let mut t = "\\Cref{a}".to_string();
+        expand_refs(&mut t);
+        assert_eq!(t, "Eq. (1)");
+        let mut t = "\\crefrange{a}{b}".to_string();
+        expand_refs(&mut t);
+        assert_eq!(t, "(1)–(2)");
         reset_equations();
     }
 
