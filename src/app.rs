@@ -841,6 +841,10 @@ pub struct EncryptedNoteApp {
     window_mode: WindowMode,
     /// Whether we've requested keyboard focus yet.
     requested_focus: bool,
+    /// Apply the saved window mode once the vault is unlocked.
+    apply_saved_window_mode: bool,
+    /// Last sensible size while windowed, restored when leaving fullscreen.
+    windowed_size: Option<egui::Vec2>,
     /// Whether we've logged the GPU adapter yet.
     logged_renderer: bool,
 }
@@ -1039,6 +1043,8 @@ impl EncryptedNoteApp {
             last_screen: None,
             window_mode: WindowMode::from_str(&initial_window_mode),
             requested_focus: false,
+            apply_saved_window_mode: true,
+            windowed_size: None,
             logged_renderer: false,
         };
         theme::apply(&cc.egui_ctx, app.config.font_size);
@@ -7174,7 +7180,14 @@ impl EncryptedNoteApp {
             .frame(frame)
             .resizable(true)
             .default_width(260.0)
-            .width_range(180.0..=420.0)
+            .width_range(
+                160.0
+                    ..=ctx
+                        .screen_rect()
+                        .width()
+                        .mul_add(0.34, 0.0)
+                        .clamp(200.0, 460.0),
+            )
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -7297,11 +7310,12 @@ impl EncryptedNoteApp {
                     ui.separator();
 
                     // Mini graph docked at the bottom of the sidebar.
-                    if self.config.sidebar_graph {
+                    if self.config.sidebar_graph && ui.available_height() > 320.0 {
+                        let max_h = (ui.available_height() * 0.55).clamp(120.0, 420.0);
                         egui::TopBottomPanel::bottom("sidebar_graph")
                             .resizable(true)
-                            .default_height(200.0)
-                            .height_range(90.0..=420.0)
+                            .default_height((ui.available_height() * 0.42).clamp(120.0, max_h))
+                            .height_range(90.0..=max_h)
                             .frame(
                                 egui::Frame::none()
                                     .fill(theme::PANEL)
@@ -7454,10 +7468,18 @@ impl EncryptedNoteApp {
             .frame(frame)
             .resizable(true)
             .default_width(280.0)
-            .width_range(200.0..=460.0)
+            .width_range(
+                180.0
+                    ..=ctx
+                        .screen_rect()
+                        .width()
+                        .mul_add(0.32, 0.0)
+                        .clamp(220.0, 480.0),
+            )
             .show(ctx, |ui| {
                 // Quick actions, above the calendar (left → right).
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     if icons::button(
                         ui,
                         Icon::Refresh,
@@ -8167,9 +8189,8 @@ impl EncryptedNoteApp {
                 return;
             }
 
-            if self.config.vertical_tabs {
-                self.vertical_tab_strip(ui);
-            } else {
+            let vertical_drawn = self.config.vertical_tabs && self.vertical_tab_strip(ui);
+            if !vertical_drawn {
                 self.tab_strip(ui);
             }
 
@@ -8271,53 +8292,68 @@ impl EncryptedNoteApp {
 
             // A second note pane (Obsidian-style split view). Ctrl+click a tab
             // to load that note into it.
+            let avail_w = ui.available_width();
             if let Some(sec) = secondary {
-                egui::SidePanel::right("second_pane")
-                    .resizable(true)
-                    .default_width((ui.available_width() * 0.5).max(220.0))
-                    .show_inside(ui, |ui| {
-                        let title = self.tabs[sec].title.clone();
-                        let sec_view = self.tabs[sec].view;
-                        ui.horizontal(|ui| {
-                            icons::icon(ui, Icon::File, 13.0, ui.visuals().weak_text_color());
-                            ui.label(RichText::new(title).small().strong());
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if icons::button(
-                                        ui,
-                                        Icon::Close,
-                                        12.0,
-                                        true,
-                                        false,
-                                        "Close second pane",
-                                    )
-                                    .clicked()
-                                    {
-                                        self.secondary = None;
-                                    }
-                                },
-                            );
+                if let Some(want) = split_pane_width(avail_w, 280.0) {
+                    egui::SidePanel::right("second_pane")
+                        .resizable(true)
+                        .default_width(want)
+                        .width_range(120.0..=(avail_w - 280.0).max(120.0))
+                        .show_inside(ui, |ui| {
+                            let title = self.tabs[sec].title.clone();
+                            let sec_view = self.tabs[sec].view;
+                            ui.horizontal(|ui| {
+                                icons::icon(ui, Icon::File, 13.0, ui.visuals().weak_text_color());
+                                ui.label(RichText::new(title).small().strong());
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if icons::button(
+                                            ui,
+                                            Icon::Close,
+                                            12.0,
+                                            true,
+                                            false,
+                                            "Close second pane",
+                                        )
+                                        .clicked()
+                                        {
+                                            self.secondary = None;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.separator();
+                            match sec_view {
+                                ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, sec, 1),
+                                ViewMode::Preview => self.preview_ui(ui, sec, 1),
+                                ViewMode::Live => self.live_ui(ui, sec, 1),
+                            }
                         });
-                        ui.separator();
-                        match sec_view {
-                            ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, sec, 1),
-                            ViewMode::Preview => self.preview_ui(ui, sec, 1),
-                            ViewMode::Live => self.live_ui(ui, sec, 1),
-                        }
-                    });
+                } else {
+                    // Too narrow: show the second note as an overlay tab instead
+                    // of squeezing both panes.
+                    self.status = crate::tr!("Window too narrow for a second pane").into();
+                    self.secondary = None;
+                }
             }
 
             if view == ViewMode::Split {
                 // When a separate second pane is open, keep this preview's
-                // scroll state distinct from it.
+                // scroll state distinct from it. Only split when there is room
+                // left, otherwise stack the preview under the editor instead of
+                // squeezing both panes to nothing.
                 let target: u8 = if secondary.is_some() { 1 } else { 0 };
-                egui::SidePanel::right("preview_pane")
-                    .resizable(true)
-                    .default_width((ui.available_width() * 0.5).max(200.0))
-                    .show_inside(ui, |ui| {
-                        self.preview_ui(ui, idx, target);
-                    });
+                let left_w = ui.available_width();
+                if let Some(want) = split_pane_width(left_w, 220.0) {
+                    egui::SidePanel::right("preview_pane")
+                        .resizable(true)
+                        .default_width(want)
+                        .width_range(120.0..=(left_w - 220.0).max(120.0))
+                        .show_inside(ui, |ui| {
+                            self.preview_ui(ui, idx, target);
+                        });
+                }
             }
 
             match view {
@@ -8445,27 +8481,45 @@ impl EncryptedNoteApp {
 
     /// Obsidian "sliding panes" look: tabs as narrow vertical strips with the
     /// title letter-stacked down the left edge of the editor.
-    fn vertical_tab_strip(&mut self, ui: &mut egui::Ui) {
+    fn vertical_tab_strip(&mut self, ui: &mut egui::Ui) -> bool {
         let n = self.tabs.len();
-        if n == 0 {
-            return;
+        let avail = ui.available_width();
+        if n == 0 || avail < 160.0 {
+            return false;
         }
-        let w = 34.0f32;
+        // Never let the strip eat the editor: it may take at most ~30% of the
+        // remaining width, and the per-tab width shrinks when there are many
+        // tabs (with a sane floor).
+        let max_strip = (avail * 0.30).clamp(28.0, 240.0);
+        let gap = 3.0f32;
+        let w = (((max_strip - gap * 2.0) / n as f32).clamp(18.0, 34.0)).floor();
+        if w < 16.0 {
+            return false;
+        }
+        let strip_w = (w * n as f32 + gap * 2.0)
+            .min(avail - 80.0)
+            .max(w + gap * 2.0);
+        let visible = ((strip_w - gap * 2.0) / w).floor().max(1.0) as usize;
+        // Too many tabs for the vertical strip: let the caller fall back to the
+        // wrapping horizontal tab bar instead of clipping tabs away.
+        if n > visible {
+            return false;
+        }
         let frame = egui::Frame::none()
             .fill(theme::PANEL_DEEP)
-            .inner_margin(egui::Margin::symmetric(3.0, 0.0));
+            .inner_margin(egui::Margin::symmetric(gap, 0.0));
         let mut select: Option<usize> = None;
         let mut close: Option<usize> = None;
         let mut preview: Option<usize> = None;
         egui::SidePanel::left("vertical_tabs")
             .frame(frame)
-            .exact_width(w * n as f32 + 6.0)
+            .exact_width(strip_w)
             .resizable(false)
             .show_inside(ui, |ui| {
-                let h = ui.available_height();
+                let h = ui.available_height().max(1.0);
                 let (row, _) =
                     ui.allocate_exact_size(egui::vec2(w * n as f32, h), egui::Sense::hover());
-                let painter = ui.painter();
+                let painter = ui.painter_at(row);
                 for i in 0..n {
                     let active = i == self.active;
                     let rect = egui::Rect::from_min_size(
@@ -8590,6 +8644,7 @@ impl EncryptedNoteApp {
         if let Some(i) = close {
             self.close_tab(i);
         }
+        true
     }
 
     /// A compact, read-only graph docked at the bottom of the left sidebar.
@@ -9448,6 +9503,12 @@ impl EncryptedNoteApp {
             WindowMode::Windowed => {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                // Some compositors keep the fullscreen/maximized geometry after
+                // the flags are cleared, leaving an unusable tiny or oversized
+                // window. Restore a sane size explicitly.
+                let size = self.windowed_size.unwrap_or(egui::vec2(1280.0, 820.0));
+                let size = egui::vec2(size.x.max(720.0), size.y.max(480.0));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
             }
         }
     }
@@ -11242,6 +11303,20 @@ impl eframe::App for EncryptedNoteApp {
             return;
         }
 
+        // Apply the saved startup window mode once, now that the vault is open
+        // (the login screen deliberately starts windowed).
+        if self.apply_saved_window_mode {
+            self.apply_saved_window_mode = false;
+            self.send_window_mode(ctx);
+        }
+        // Remember the windowed size so leaving fullscreen restores it.
+        if self.window_mode == WindowMode::Windowed {
+            let size = ctx.screen_rect().size();
+            if size.x > 320.0 && size.y > 240.0 {
+                self.windowed_size = Some(size);
+            }
+        }
+
         self.handle_shortcuts(ctx);
         if let Some(text) = self.pending_clipboard.take() {
             ctx.copy_text(text);
@@ -12148,6 +12223,17 @@ fn apply_multi_edit(
     (chars.into_iter().collect(), rest)
 }
 
+/// Width for a right-hand split pane, or `None` when the editor is too narrow
+/// to split safely. Guarantees the editor keeps at least `min_editor` points.
+fn split_pane_width(avail: f32, min_editor: f32) -> Option<f32> {
+    if !avail.is_finite() || avail < min_editor + 120.0 {
+        return None;
+    }
+    let max = (avail - min_editor).max(120.0);
+    let want = (avail * 0.5).clamp(120.0, max.max(120.0));
+    Some(want.min(max).max(120.0))
+}
+
 /// Seconds since the Unix epoch, as `f64`.
 fn now_secs() -> f64 {
     std::time::SystemTime::now()
@@ -12584,6 +12670,24 @@ mod tests {
         let ci = load_color_image(&path).unwrap();
         assert_eq!(ci.size, [2, 1]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_pane_stays_within_bounds() {
+        // Too narrow: no split at all.
+        assert_eq!(split_pane_width(300.0, 280.0), None);
+        assert_eq!(split_pane_width(0.0, 220.0), None);
+        assert_eq!(split_pane_width(f32::NAN, 220.0), None);
+        // Normal: the pane gets about half and the editor keeps its minimum.
+        let w = split_pane_width(1200.0, 280.0).unwrap();
+        assert!((w - 600.0).abs() < 1.0);
+        assert!(1200.0 - w >= 280.0 - 0.01);
+        // Very wide: clamped, editor always keeps room.
+        let w = split_pane_width(4000.0, 220.0).unwrap();
+        assert!(4000.0 - w >= 220.0);
+        // Just above the threshold.
+        let w = split_pane_width(401.0, 280.0).unwrap();
+        assert!(w >= 120.0 && 401.0 - w >= 120.0);
     }
 
     #[test]

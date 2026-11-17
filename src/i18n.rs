@@ -422,6 +422,10 @@ const TR: &[(&str, &str)] = &[
     ("Property saved", "Özellik kaydedildi"),
     ("Property removed", "Özellik silindi"),
     ("Second pane closed", "İkinci panel kapatıldı"),
+    (
+        "Window too narrow for a second pane",
+        "İkinci panel için pencere çok dar",
+    ),
     ("Loaded into second pane", "İkinci panele yüklendi"),
     (
         "Recording… run Voice note again to stop",

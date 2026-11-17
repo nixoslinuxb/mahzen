@@ -380,6 +380,18 @@ Details borrowed from that theme:
 - **Coloured link states** — resolved wikilinks are periwinkle, unresolved ones
   warm orange; list bullets and numbers are gold; headings carry a fold chevron.
 - **Status bar** — a mode chip, the current message and `N words  M characters`.
+- **Resize-safe layout** — panes never squeeze the editor to nothing:
+  - the vertical tab strip is capped at ~30% of the editor width and shrinks its
+    tabs; with too many tabs it falls back to the wrapping horizontal bar,
+  - the split/second panes only open when there is room (`split_pane_width`
+    keeps a minimum editor width) and their drag range is computed from the
+    current window size,
+  - side-panel width limits and the sidebar-graph height range scale with the
+    window, and the mini graph is hidden on short windows,
+  - the ribbon and right-panel action rows wrap instead of overflowing,
+  - leaving fullscreen restores the last windowed size instead of a
+    zero/tiny window, and the saved startup window mode is applied once the
+    vault unlocks.
 - **Reading surface** — wider line height, rounded bordered code blocks, tinted
   callouts with an accent bar, and a quoted block with an accent rule.
 
