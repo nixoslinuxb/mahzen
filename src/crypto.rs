@@ -178,10 +178,21 @@ impl VaultCrypto {
 
     /// Encrypt UTF-8 text into a framed byte buffer.
     pub fn encrypt(&self, plaintext: &str) -> Vec<u8> {
+        self.encrypt_bytes(plaintext.as_bytes())
+    }
+
+    /// Decrypt a framed buffer back into UTF-8 text.
+    pub fn decrypt(&self, data: &[u8]) -> Option<String> {
+        String::from_utf8(self.decrypt_bytes(data)?).ok()
+    }
+
+    /// Encrypt arbitrary bytes (attachments: images, audio, video, PDFs) into
+    /// the same `ENCD1` frame used for notes.
+    pub fn encrypt_bytes(&self, plaintext: &[u8]) -> Vec<u8> {
         let nonce = random_bytes::<NONCE_LEN>();
         let cipher = Aes256Gcm::new_from_slice(&self.key).expect("valid key size");
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce), plaintext.as_bytes())
+            .encrypt(Nonce::from_slice(&nonce), plaintext)
             .expect("encryption cannot fail");
         let mut out = Vec::with_capacity(MAGIC.len() + NONCE_LEN + ciphertext.len());
         out.extend_from_slice(MAGIC);
@@ -190,16 +201,15 @@ impl VaultCrypto {
         out
     }
 
-    /// Decrypt a framed buffer back into UTF-8 text.
-    pub fn decrypt(&self, data: &[u8]) -> Option<String> {
+    /// Decrypt a framed buffer back into raw bytes.
+    pub fn decrypt_bytes(&self, data: &[u8]) -> Option<Vec<u8>> {
         if data.len() < MAGIC.len() + NONCE_LEN || &data[..MAGIC.len()] != MAGIC {
             return None;
         }
         let nonce = &data[MAGIC.len()..MAGIC.len() + NONCE_LEN];
         let ciphertext = &data[MAGIC.len() + NONCE_LEN..];
         let cipher = Aes256Gcm::new_from_slice(&self.key).ok()?;
-        let plaintext = cipher.decrypt(Nonce::from_slice(nonce), ciphertext).ok()?;
-        String::from_utf8(plaintext).ok()
+        cipher.decrypt(Nonce::from_slice(nonce), ciphertext).ok()
     }
 }
 
@@ -436,6 +446,16 @@ mod tests {
         let (keyfile, _) = VaultCrypto::create("CorrectHorse9!Battery").unwrap();
         assert!(VaultCrypto::unlock("CorrectHorse9!Battery", &keyfile).is_some());
         assert!(VaultCrypto::unlock("wrong-password-000", &keyfile).is_none());
+    }
+
+    #[test]
+    fn encrypts_and_decrypts_arbitrary_bytes() {
+        let (_, crypto) = VaultCrypto::create("CorrectHorse1-Battery!").unwrap();
+        let data: Vec<u8> = (0..=255u8).collect();
+        let blob = crypto.encrypt_bytes(&data);
+        assert!(is_encrypted(&blob));
+        assert_eq!(crypto.decrypt_bytes(&blob).unwrap(), data);
+        assert!(crypto.decrypt(&blob).is_none(), "binary is not UTF-8 text");
     }
 
     #[test]

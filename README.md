@@ -46,7 +46,13 @@ no passwordless way in.
   temp-file-and-rename so a crash cannot corrupt a note.
 - Notes from earlier (unencrypted) versions are transparently **migrated**: the
   first time you open such a vault while unlocked, any plaintext `.md` files are
-  encrypted in place.
+  encrypted in place — and the same now happens for attachments in `assets/`.
+- **Attachments are encrypted too.** Images, voice notes, audio, video and PDF
+  cards are stored with the same `ENCD1` AES-256-GCM frame as notes, so a
+  screenshotted attachment or a voice memo is no longer readable on disk.
+  The app decrypts in memory for display and writes short-lived decrypted
+  copies to `$XDG_RUNTIME_DIR` (tmpfs) only for external tools like `ffmpeg`
+  and `pdftoppm`; that cache is deleted when the vault locks.
 
 ## Password policy
 
@@ -429,9 +435,10 @@ Details borrowed from that theme:
   circle for today plus a dot on days that have a daily note.
 - **Breadcrumb + inline title** — vault ▪ folders ▪ note above an oversized
   coloured note title.
-- **Vertical tab strips (sliding panes)** — tabs are narrow columns down the
-  left edge of the editor with the title letter-stacked, a gold edge on the
-  active note, a dirty dot, and preview/close buttons at the bottom (toggle in
+- **Vertical tab strips (sliding panes)** — narrow columns down the left edge of
+  the editor whose titles are rotated 90° (reading top → bottom, like
+  Obsidian's sliding panes), with a gold edge on the active note, a dirty dot,
+  and working **preview** and **close** buttons at the bottom (toggle in
   Settings).
 - **Selected file preview** — the selected note in the explorer expands into a
   rounded block showing its opening lines.

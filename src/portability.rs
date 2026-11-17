@@ -77,8 +77,7 @@ pub fn write_plain(dest: &Path, text: &str) -> std::io::Result<()> {
 /// copying `assets` (relative paths resolved under `vault_root`) alongside.
 pub fn export_notes(
     notes: &[(PathBuf, String)],
-    assets: &[PathBuf],
-    vault_root: &Path,
+    assets: &[(PathBuf, Vec<u8>)],
     dest_root: &Path,
 ) -> ExportReport {
     let mut report = ExportReport::default();
@@ -98,8 +97,7 @@ pub fn export_notes(
             Err(e) => report.errors.push(format!("{}: {e}", out_rel.display())),
         }
     }
-    for rel in assets {
-        let src = vault_root.join(rel);
+    for (rel, bytes) in assets {
         let dest = dest_root.join(rel);
         if let Some(parent) = dest.parent() {
             if fs::create_dir_all(parent).is_err() {
@@ -107,8 +105,8 @@ pub fn export_notes(
                 continue;
             }
         }
-        match fs::copy(&src, &dest) {
-            Ok(_) => report.assets += 1,
+        match fs::write(&dest, bytes) {
+            Ok(()) => report.assets += 1,
             Err(e) => {
                 report.skipped += 1;
                 report.errors.push(format!("{}: {e}", rel.display()));
@@ -261,7 +259,11 @@ mod tests {
                 "---\ntags: [x]\n---\ntext\n".to_string(),
             ),
         ];
-        let report = export_notes(&notes, &[PathBuf::from("assets/a.png")], &vault, &dest);
+        let report = export_notes(
+            &notes,
+            &[(PathBuf::from("assets/a.png"), b"png".to_vec())],
+            &dest,
+        );
         assert_eq!(report.notes, 2);
         assert_eq!(report.assets, 1);
         assert_eq!(

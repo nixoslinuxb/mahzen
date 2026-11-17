@@ -1137,6 +1137,55 @@ impl EncryptedNoteApp {
         Vault::write_bytes(path, &blob)
     }
 
+    /// Read an attachment, decrypting it when it is one of ours. Plaintext
+    /// files from older versions are accepted as-is (and migrated on unlock).
+    fn read_asset(&self, path: &Path) -> Option<Vec<u8>> {
+        let data = Vault::read_bytes(path).ok()?;
+        if crypto::is_encrypted(&data) {
+            self.crypto.as_ref()?.decrypt_bytes(&data)
+        } else {
+            Some(data)
+        }
+    }
+
+    /// Write an attachment encrypted with the vault key.
+    fn write_asset(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        let c = self.crypto.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "vault is locked")
+        })?;
+        Vault::write_bytes(path, &c.encrypt_bytes(bytes))
+    }
+
+    /// Write a decrypted copy of a media attachment into the cache directory so
+    /// external tools (`ffmpeg`, `pdftoppm`) can read it. Returns the temp path.
+    fn materialize_media(&self, path: &Path) -> Option<PathBuf> {
+        use std::hash::{Hash, Hasher};
+        let bytes = self.read_asset(path)?;
+        // Prefer a tmpfs runtime dir so decrypted media never survives a logout.
+        let cache = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(config::dir)
+            .join("encrypted-note-media");
+        let _ = fs::create_dir_all(&cache);
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        path.to_string_lossy().hash(&mut h);
+        bytes.len().hash(&mut h);
+        if let Ok(meta) = fs::metadata(path) {
+            if let Ok(m) = meta.modified() {
+                m.hash(&mut h);
+            }
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "media".into());
+        let out = cache.join(format!("{:016x}-{name}", h.finish()));
+        if !out.exists() {
+            fs::write(&out, &bytes).ok()?;
+        }
+        Some(out)
+    }
+
     /// Encrypt every plaintext note in the current vault. Runs once after
     /// unlock so that any legacy/unencrypted files become encrypted at rest.
     fn migrate_plaintext(&mut self) {
@@ -1164,8 +1213,38 @@ impl EncryptedNoteApp {
             }
             count
         };
-        if migrated > 0 {
-            self.status = format!("Encrypted {migrated} pre-existing note(s)");
+        // Same for attachments in `assets/` that are still plaintext.
+        let migrated_assets = {
+            let Some(crypto) = self.crypto.as_ref() else {
+                return;
+            };
+            let mut count = 0usize;
+            if let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) {
+                let assets = root.join("assets");
+                if let Ok(entries) = fs::read_dir(&assets) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_file() {
+                            continue;
+                        }
+                        if let Ok(data) = Vault::read_bytes(&path) {
+                            if !crypto::is_encrypted(&data) {
+                                let blob = crypto.encrypt_bytes(&data);
+                                if Vault::write_bytes(&path, &blob).is_ok() {
+                                    count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            count
+        };
+        match (migrated, migrated_assets) {
+            (0, 0) => {}
+            (n, 0) => self.status = format!("Encrypted {n} pre-existing note(s)"),
+            (0, a) => self.status = format!("Encrypted {a} pre-existing attachment(s)"),
+            (n, a) => self.status = format!("Encrypted {n} note(s) and {a} attachment(s)"),
         }
     }
 
@@ -1830,7 +1909,8 @@ impl EncryptedNoteApp {
             }
         }
         // Copy attachments (they live outside the encrypted note set).
-        let mut assets: Vec<PathBuf> = Vec::new();
+        // Attachments are decrypted on the way out so the export is readable.
+        let mut assets: Vec<(PathBuf, Vec<u8>)> = Vec::new();
         let assets_dir = root.join("assets");
         if assets_dir.is_dir() {
             for entry in std::fs::read_dir(&assets_dir)
@@ -1838,12 +1918,16 @@ impl EncryptedNoteApp {
                 .flatten()
                 .flatten()
             {
-                if entry.path().is_file() {
-                    assets.push(PathBuf::from("assets").join(entry.file_name()));
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                if let Some(bytes) = self.read_asset(&path) {
+                    assets.push((PathBuf::from("assets").join(entry.file_name()), bytes));
                 }
             }
         }
-        let report = portability::export_notes(&notes, &assets, &root, dest);
+        let report = portability::export_notes(&notes, &assets, dest);
         self.portability = None;
         self.status = crate::tr!(
             "Exported {} note(s) and {} asset(s) to {}",
@@ -1913,8 +1997,11 @@ impl EncryptedNoteApp {
             if let Some(parent) = dest.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match std::fs::copy(src.join(rel), &dest) {
-                Ok(_) => report.assets += 1,
+            let copied = std::fs::read(src.join(rel))
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| self.write_asset(&dest, &bytes).map_err(|e| e.to_string()));
+            match copied {
+                Ok(()) => report.assets += 1,
                 Err(e) => {
                     report.skipped += 1;
                     report.errors.push(format!("{}: {e}", rel.display()));
@@ -2240,6 +2327,10 @@ impl EncryptedNoteApp {
             if !path.exists() {
                 self.status = "Recording failed (is ffmpeg installed?)".into();
                 return;
+            }
+            // ffmpeg wrote a plaintext file: encrypt it in place.
+            if let Ok(bytes) = fs::read(&path) {
+                let _ = self.write_asset(&path, &bytes);
             }
             let rel = path
                 .strip_prefix(
@@ -3263,7 +3354,7 @@ impl EncryptedNoteApp {
         if !out.exists() {
             let key = out.to_string_lossy().to_string();
             if self.canvas_pdf_pending.insert(key) {
-                let input = path.to_path_buf();
+                let input = self.materialize_media(path)?;
                 let prefix = out.to_string_lossy().trim_end_matches(".png").to_string();
                 std::thread::spawn(move || {
                     let _ = std::process::Command::new("pdftoppm")
@@ -4881,7 +4972,11 @@ impl EncryptedNoteApp {
             dest = assets.join(fname);
             counter += 1;
         }
-        if let Err(e) = fs::copy(src, &dest) {
+        let Some(bytes) = fs::read(src).ok() else {
+            self.status = "Attach failed: could not read the file".into();
+            return;
+        };
+        if let Err(e) = self.write_asset(&dest, &bytes) {
             self.status = format!("Attach failed: {e}");
             return;
         }
@@ -4960,7 +5055,8 @@ impl EncryptedNoteApp {
         if let Some(tex) = self.media_textures.get(path) {
             return Some(tex.clone());
         }
-        let image = load_color_image(path)?;
+        let bytes = self.read_asset(path)?;
+        let image = decode_image_bytes(&bytes)?;
         let tex = ctx.load_texture(
             format!("media:{}", path.display()),
             image,
@@ -5248,13 +5344,19 @@ impl EncryptedNoteApp {
     /// already playing.
     fn start_media(&mut self, path: &Path, video: bool) {
         self.stop_media();
-        let info = media::probe(path);
+        // Attachments are encrypted on disk: hand external tools a decrypted
+        // copy from the cache, but keep `path` as the playback identity.
+        let Some(source) = self.materialize_media(path) else {
+            self.status = crate::tr!("Could not read the attachment").into();
+            return;
+        };
+        let info = media::probe(&source);
         let volume = self.media_layout.volume;
         let player = if video {
-            media::Video::open(path, media::VIDEO_WIDTH, info, 0.0, volume)
+            media::Video::open(&source, media::VIDEO_WIDTH, info, 0.0, volume)
                 .map(media::Player::Video)
         } else {
-            media::Sound::start(path, info.duration, 0.0, volume).map(media::Player::Audio)
+            media::Sound::start(&source, info.duration, 0.0, volume).map(media::Player::Audio)
         };
         match player {
             Some(p) => {
@@ -5357,9 +5459,19 @@ impl EncryptedNoteApp {
     // ----------------------------------------------------------------- gate
 
     /// Drop the key and all decrypted state, returning to the unlock screen.
+    /// Remove decrypted media copies from the runtime cache.
+    fn clear_media_cache(&self) {
+        let cache = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(config::dir)
+            .join("encrypted-note-media");
+        let _ = fs::remove_dir_all(cache);
+    }
+
     fn lock(&mut self) {
         self.save_all();
         self.stop_media();
+        self.clear_media_cache();
         // Clear decrypted secrets from memory.
         self.passwords_open = false;
         self.passwords = passwords::Store::default();
@@ -8915,6 +9027,7 @@ impl EncryptedNoteApp {
                     } else {
                         theme::TEXT_MUTED
                     };
+                    let mut close_rect: Option<egui::Rect> = None;
                     let tab_resp = egui::Frame::none()
                         .fill(fill)
                         .rounding(egui::Rounding {
@@ -8942,6 +9055,7 @@ impl EncryptedNoteApp {
                                 if close.clicked() {
                                     to_close = Some(i);
                                 }
+                                close_rect = Some(close.rect.expand(2.0));
                             });
                         })
                         .response;
@@ -8961,7 +9075,12 @@ impl EncryptedNoteApp {
                     if resp.drag_started() {
                         drag_started = Some(i);
                     }
-                    if resp.clicked() {
+                    // Ignore clicks that landed on the close button.
+                    let on_close = close_rect.is_some_and(|r| {
+                        ui.input(|i| i.pointer.interact_pos())
+                            .is_some_and(|p| r.contains(p))
+                    });
+                    if resp.clicked() && !on_close {
                         if ui.input(|inp| inp.modifiers.command) {
                             self.secondary = Some(i);
                             self.secondary_live_line = 0;
@@ -9116,7 +9235,8 @@ impl EncryptedNoteApp {
                                 ui.id().with(("stackedtab", i)),
                                 egui::Sense::click(),
                             );
-                            if click.clicked() {
+                            let on_close = to_close == Some(i);
+                            if click.clicked() && !on_close {
                                 if ui.input(|inp| inp.modifiers.command) {
                                     self.secondary = Some(i);
                                     self.secondary_live_line = 0;
@@ -9171,9 +9291,8 @@ impl EncryptedNoteApp {
         if n == 0 || avail < 160.0 {
             return false;
         }
-        // Never let the strip eat the editor: it may take at most ~30% of the
-        // remaining width, and the per-tab width shrinks when there are many
-        // tabs (with a sane floor).
+        // Cap the strip at ~30% of the editor and shrink tabs when there are
+        // many; fall back to the wrapping horizontal bar when they would clip.
         let max_strip = (avail * 0.30).clamp(28.0, 240.0);
         let gap = 3.0f32;
         let w = (((max_strip - gap * 2.0) / n as f32).clamp(18.0, 34.0)).floor();
@@ -9184,8 +9303,6 @@ impl EncryptedNoteApp {
             .min(avail - 80.0)
             .max(w + gap * 2.0);
         let visible = ((strip_w - gap * 2.0) / w).floor().max(1.0) as usize;
-        // Too many tabs for the vertical strip: let the caller fall back to the
-        // wrapping horizontal tab bar instead of clipping tabs away.
         if n > visible {
             return false;
         }
@@ -9204,17 +9321,32 @@ impl EncryptedNoteApp {
                 let (row, _) =
                     ui.allocate_exact_size(egui::vec2(w * n as f32, h), egui::Sense::hover());
                 let painter = ui.painter_at(row);
+                // Bottom action row (eye + close) occupies the last 34px, so tab
+                // clicks must stop above it.
+                let actions_h = 34.0f32;
                 for i in 0..n {
                     let active = i == self.active;
                     let rect = egui::Rect::from_min_size(
                         egui::pos2(row.min.x + w * i as f32, row.min.y),
                         egui::vec2(w, h),
                     );
+                    let click_rect = egui::Rect::from_min_max(
+                        rect.min,
+                        egui::pos2(rect.max.x, (rect.max.y - actions_h).max(rect.min.y)),
+                    );
+
+                    // The tab body handles selection *first* so the small action
+                    // buttons below can take precedence over it.
+                    let tab_resp =
+                        ui.interact(click_rect, ui.id().with(("vtab", i)), egui::Sense::click());
+
                     painter.rect_filled(
                         rect,
                         0.0,
                         if active {
                             theme::BASE
+                        } else if tab_resp.hovered() {
+                            theme::WIDGET.linear_multiply(0.45)
                         } else {
                             theme::PANEL_DEEP
                         },
@@ -9235,67 +9367,99 @@ impl EncryptedNoteApp {
                             theme::GOLD,
                         );
                     }
-                    // Letter-stacked title.
+
+                    // Title rotated 90° clockwise (reads top → bottom), the way
+                    // Obsidian's sliding panes show tab titles.
                     let title = self.tabs[i].title.clone();
                     let color = if active {
                         theme::TEXT
                     } else {
                         theme::TEXT_MUTED
                     };
-                    let mut y = rect.min.y + 12.0;
-                    for ch in title.chars().filter(|c| !c.is_whitespace()) {
-                        if y + 11.0 > rect.max.y - 62.0 {
-                            break;
-                        }
-                        painter.text(
-                            egui::pos2(rect.center().x, y),
-                            egui::Align2::CENTER_TOP,
-                            ch.to_string(),
-                            egui::FontId::proportional(9.5),
+                    let font = egui::FontId::proportional(11.0);
+                    // Truncate to the space available in the strip.
+                    let max_chars =
+                        (((click_rect.height() - 12.0) / (11.0 * 0.52)).max(3.0)) as usize;
+                    let galley = ui.fonts(|f| {
+                        let mut job = egui::text::LayoutJob::simple_singleline(
+                            ellipsize(&title, max_chars),
+                            font.clone(),
                             color,
                         );
-                        y += 10.5;
-                    }
+                        job.wrap.max_width = f32::INFINITY;
+                        f.layout_job(job)
+                    });
+                    let line_h = galley.size().y;
+                    let start_y = click_rect.min.y + 6.0;
+                    painter.add(egui::Shape::Text(egui::epaint::TextShape {
+                        pos: egui::pos2(rect.center().x + line_h * 0.5, start_y),
+                        galley,
+                        underline: egui::Stroke::NONE,
+                        fallback_color: color,
+                        override_text_color: None,
+                        opacity_factor: 1.0,
+                        angle: std::f32::consts::FRAC_PI_2,
+                    }));
+
                     if self.tabs[i].dirty() {
                         painter.circle_filled(
-                            egui::pos2(rect.center().x, rect.min.y + 5.0),
+                            egui::pos2(rect.center().x, rect.min.y + 6.0),
                             2.0,
                             theme::ACCENT,
                         );
                     }
-                    // Bottom action icons: preview + close.
+
+                    // Bottom actions: preview (eye) and close (×).
                     let eye = egui::Rect::from_center_size(
-                        egui::pos2(rect.center().x, rect.max.y - 34.0),
-                        egui::vec2(20.0, 18.0),
+                        egui::pos2(rect.center().x, rect.max.y - 22.0),
+                        egui::vec2(w.max(16.0), 16.0),
+                    );
+                    let x = egui::Rect::from_center_size(
+                        egui::pos2(rect.center().x, rect.max.y - 7.0),
+                        egui::vec2(w.max(16.0), 16.0),
                     );
                     let eye_resp =
                         ui.interact(eye, ui.id().with(("vtabeye", i)), egui::Sense::click());
-                    if active {
-                        painter.circle_stroke(eye.center(), 5.0, egui::Stroke::new(1.0_f32, color));
-                        painter.circle_filled(eye.center(), 1.6, color);
+                    let x_resp = ui.interact(x, ui.id().with(("vtabx", i)), egui::Sense::click());
+                    let eye_color = if eye_resp.hovered() {
+                        theme::TEXT
                     } else {
-                        painter.text(
+                        color
+                    };
+                    if active {
+                        painter.circle_stroke(
                             eye.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "◎",
-                            egui::FontId::proportional(10.0),
-                            color,
+                            5.0,
+                            egui::Stroke::new(1.0_f32, eye_color),
+                        );
+                        painter.circle_filled(eye.center(), 1.8, eye_color);
+                    } else {
+                        painter.circle_stroke(
+                            eye.center(),
+                            5.0,
+                            egui::Stroke::new(1.0_f32, eye_color),
                         );
                     }
-                    let x = egui::Rect::from_center_size(
-                        egui::pos2(rect.center().x, rect.max.y - 14.0),
-                        egui::vec2(20.0, 18.0),
-                    );
-                    let x_resp = ui.interact(x, ui.id().with(("vtabx", i)), egui::Sense::click());
+                    let x_color = if x_resp.hovered() {
+                        theme::DANGER
+                    } else {
+                        color
+                    };
                     painter.text(
                         x.center(),
                         egui::Align2::CENTER_CENTER,
                         "×",
-                        egui::FontId::proportional(11.0),
-                        color,
+                        egui::FontId::proportional(12.0),
+                        x_color,
                     );
-                    let resp = ui.interact(rect, ui.id().with(("vtab", i)), egui::Sense::click());
-                    if resp.clicked() {
+
+                    if eye_resp.clicked() {
+                        preview = Some(i);
+                    }
+                    if x_resp.clicked() {
+                        close = Some(i);
+                    }
+                    if tab_resp.clicked() {
                         if ui.input(|inp| inp.modifiers.command) {
                             self.secondary = Some(i);
                             self.secondary_live_line = 0;
@@ -9304,23 +9468,16 @@ impl EncryptedNoteApp {
                             select = Some(i);
                         }
                     }
-                    if resp.hovered() && !active {
-                        painter.rect_filled(rect, 0.0, theme::WIDGET.linear_multiply(0.30));
-                    }
-                    if resp.hovered() {
-                        resp.on_hover_text(title.clone());
-                    }
-                    if eye_resp.clicked() {
-                        preview = Some(i);
-                    }
-                    if x_resp.clicked() {
-                        close = Some(i);
+                    if tab_resp.hovered() {
+                        tab_resp.on_hover_text(title);
                     }
                 }
             });
         if let Some(i) = preview {
+            // Preview button: open this tab and switch it to the preview view.
             self.active = i;
             self.set_view(ViewMode::Preview);
+            self.status = crate::tr!("Preview").into();
         }
         if let Some(i) = select {
             self.active = i;
@@ -11939,14 +12096,41 @@ impl EncryptedNoteApp {
             if let Some(p) = chosen {
                 if self.canvas_pdf_mode {
                     self.canvas_pdf_mode = false;
+                    // Store the PDF encrypted inside the vault and reference it
+                    // relatively, so a canvas board is self-contained.
+                    let mut rel = p.to_string_lossy().to_string();
+                    if let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) {
+                        let name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "document.pdf".into());
+                        let assets = root.join("assets");
+                        let _ = fs::create_dir_all(&assets);
+                        let mut dest = assets.join(&name);
+                        let mut counter = 1;
+                        while dest.exists() {
+                            let stem = Path::new(&name)
+                                .file_stem()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "document".into());
+                            dest = assets.join(format!("{stem} {counter}.pdf"));
+                            counter += 1;
+                        }
+                        if let Ok(bytes) = fs::read(&p) {
+                            if self.write_asset(&dest, &bytes).is_ok() {
+                                rel = format!(
+                                    "assets/{}",
+                                    dest.file_name().unwrap_or_default().to_string_lossy()
+                                );
+                            }
+                        }
+                    }
                     if let Some(view) = self.canvas.as_mut() {
                         let last = view.data.nodes.len() as f32;
                         view.snapshot();
-                        let id = view.data.add_file_node(
-                            &p.to_string_lossy(),
-                            40.0 + last * 24.0,
-                            40.0 + last * 24.0,
-                        );
+                        let id =
+                            view.data
+                                .add_file_node(&rel, 40.0 + last * 24.0, 40.0 + last * 24.0);
                         view.sel.clear();
                         view.sel.insert(id);
                         self.status = crate::tr!("Added PDF card · {}", p.display());
