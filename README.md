@@ -153,8 +153,18 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   brackets and link URLs) and styles the content instead: headings are enlarged,
   bold/italic/strikethrough are rendered, code gets a background, wikilinks look
   like links. The caret and selection stay character-accurate because the layout
-  keeps the original bytes (hidden markers collapse to near-zero width). Toggle
-  it with the palette command *Toggle concealed markdown*.
+  keeps the original bytes (hidden markers collapse to near-zero width).
+  **Element-level reveal**: the markers of the construct the caret or selection
+  is inside become visible again (`**bold**`, `[[link]]`, `[text](url)`, heading
+  and quote prefixes), so editing feels like Obsidian's live preview while the
+  rest of the note stays concealed. Toggle it with the palette command *Toggle
+  concealed markdown*.
+- **Multi-cursor editing** — `Ctrl+D` selects the word and adds the next
+  occurrence as an extra caret; `Ctrl+Alt+Up` / `Ctrl+Alt+Down` add a caret on
+  the line above/below; `Alt+click` places a caret anywhere. Typing, Enter, Tab,
+  Backspace/Delete, word/line/arrow navigation and shift-selection apply at
+  every caret at once, secondary carets and selections are drawn in the accent
+  colour, and `Esc` (or a plain click) collapses back to a single caret.
 - **Find / replace in the current note** — `Ctrl+F` (or `Ctrl+H`) opens an
   inline find bar with match highlighting, case toggle, next/previous, and
   **Replace** / **Replace all**. `Ctrl+Shift+F` still runs the vault-wide search.

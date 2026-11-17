@@ -627,6 +627,10 @@ pub struct EncryptedNoteApp {
     find_focus: bool,
     /// Character range to select in the editor on the next frame.
     pending_select: Option<(usize, usize)>,
+    /// Multi-cursor editing: every caret/selection, primary first.
+    cursors: Vec<(usize, usize)>,
+    /// Whether the multi-cursor layer owns the editor input.
+    multi_cursor: bool,
     /// Properties (frontmatter) editor dialog.
     prop_edit_open: bool,
     prop_key: String,
@@ -891,6 +895,8 @@ impl EncryptedNoteApp {
             find_match: 0,
             find_focus: false,
             pending_select: None,
+            cursors: Vec::new(),
+            multi_cursor: false,
             prop_edit_open: false,
             prop_key: String::new(),
             prop_value: String::new(),
@@ -8211,6 +8217,267 @@ impl EncryptedNoteApp {
         }
     }
 
+    /// Load the primary caret/selection (character indices) from `TextEdit`.
+    fn editor_state_range(ctx: &egui::Context, id: egui::Id) -> Option<(usize, usize)> {
+        let state = egui::text_edit::TextEditState::load(ctx, id)?;
+        let range = state.cursor.char_range()?;
+        let [a, b] = range.sorted();
+        Some((a.index, b.index))
+    }
+
+    /// Store the primary caret/selection back into the `TextEdit` state.
+    fn store_editor_range(ctx: &egui::Context, id: egui::Id, range: (usize, usize)) {
+        let mut state = egui::text_edit::TextEditState::load(ctx, id).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(range.0),
+                egui::text::CCursor::new(range.1),
+            )));
+        state.store(ctx, id);
+    }
+
+    /// Intercept typing/navigation while multi-cursor mode owns the editor.
+    fn multi_input(&mut self, ui: &egui::Ui, idx: usize, id: egui::Id) -> bool {
+        let ctx = ui.ctx().clone();
+        if !ui.memory(|m| m.has_focus(id)) {
+            return false;
+        }
+        if self.cursors.is_empty() {
+            if let Some(r) = Self::editor_state_range(&ctx, id) {
+                self.cursors = vec![r];
+            } else {
+                self.cursors = vec![(0, 0)];
+            }
+        }
+        // Escape collapses back to a single caret.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.multi_cursor = false;
+            if let Some(primary) = self.cursors.first().copied() {
+                Self::store_editor_range(&ctx, id, primary);
+            }
+            self.cursors.clear();
+            return true;
+        }
+        // Text input events are handled by us, not by TextEdit.
+        let typed: Vec<String> = ctx.input_mut(|i| {
+            let mut out = Vec::new();
+            i.events.retain(|e| match e {
+                egui::Event::Text(t) => {
+                    out.push(t.clone());
+                    false
+                }
+                _ => true,
+            });
+            out
+        });
+        let mut edit: Option<MultiEdit> = None;
+        if !typed.is_empty() {
+            edit = Some(MultiEdit::Insert(typed.concat()));
+        }
+        use egui::{Key, Modifiers};
+        let plain = Modifiers::NONE;
+        let shift = Modifiers::SHIFT;
+        let ctrl = Modifiers::COMMAND;
+        let ctrl_shift = Modifiers::COMMAND | Modifiers::SHIFT;
+        let hit = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        // Keys are checked in a fixed order; only the first match wins.
+        if edit.is_none() {
+            if hit(ctrl_shift, Key::ArrowLeft) {
+                edit = Some(MultiEdit::WordLeftSel);
+            } else if hit(ctrl_shift, Key::ArrowRight) {
+                edit = Some(MultiEdit::WordRightSel);
+            } else if hit(ctrl, Key::ArrowLeft) {
+                edit = Some(MultiEdit::WordLeft);
+            } else if hit(ctrl, Key::ArrowRight) {
+                edit = Some(MultiEdit::WordRight);
+            } else if hit(shift, Key::ArrowLeft) {
+                edit = Some(MultiEdit::LeftSel);
+            } else if hit(shift, Key::ArrowRight) {
+                edit = Some(MultiEdit::RightSel);
+            } else if hit(shift, Key::ArrowUp) {
+                edit = Some(MultiEdit::UpSel);
+            } else if hit(shift, Key::ArrowDown) {
+                edit = Some(MultiEdit::DownSel);
+            } else if hit(shift, Key::Home) {
+                edit = Some(MultiEdit::HomeSel);
+            } else if hit(shift, Key::End) {
+                edit = Some(MultiEdit::EndSel);
+            } else if hit(plain, Key::ArrowLeft) {
+                edit = Some(MultiEdit::Left);
+            } else if hit(plain, Key::ArrowRight) {
+                edit = Some(MultiEdit::Right);
+            } else if hit(plain, Key::ArrowUp) {
+                edit = Some(MultiEdit::Up);
+            } else if hit(plain, Key::ArrowDown) {
+                edit = Some(MultiEdit::Down);
+            } else if hit(plain, Key::Home) {
+                edit = Some(MultiEdit::Home);
+            } else if hit(plain, Key::End) {
+                edit = Some(MultiEdit::End);
+            } else if hit(plain, Key::Backspace) {
+                edit = Some(MultiEdit::Backspace);
+            } else if hit(plain, Key::Delete) {
+                edit = Some(MultiEdit::Delete);
+            } else if hit(plain, Key::Enter) {
+                edit = Some(MultiEdit::Insert("\n".into()));
+            } else if hit(plain, Key::Tab) {
+                edit = Some(MultiEdit::Insert("    ".into()));
+            }
+        }
+        let Some(edit) = edit else {
+            return false;
+        };
+        let old = self.tabs[idx].text.clone();
+        let (new_text, cursors) = apply_multi_edit(&old, &self.cursors, &edit);
+        if new_text != old {
+            let tab = &mut self.tabs[idx];
+            tab.undo.push(old);
+            if tab.undo.len() > 500 {
+                tab.undo.remove(0);
+            }
+            tab.redo.clear();
+            tab.text = new_text;
+        }
+        self.cursors = cursors;
+        if let Some(primary) = self.cursors.first().copied() {
+            Self::store_editor_range(&ctx, id, primary);
+        }
+        ui.memory_mut(|m| m.request_focus(id));
+        true
+    }
+
+    /// Ctrl+D: select the word / add the next occurrence as another cursor.
+    fn add_next_occurrence(&mut self, ctx: &egui::Context) {
+        let idx = self.active;
+        let Some(text) = self.tabs.get(idx).map(|t| t.text.clone()) else {
+            return;
+        };
+        let id = egui::Id::new(("editor", idx, 0u8));
+        if !self.multi_cursor {
+            let r = Self::editor_state_range(ctx, id).unwrap_or((0, 0));
+            let (a, b) = (r.0.min(r.1), r.0.max(r.1));
+            let chars: Vec<char> = text.chars().collect();
+            if a == b {
+                let mut s = a.min(chars.len());
+                let mut e = s;
+                while s > 0 && is_word_char(chars[s - 1]) {
+                    s -= 1;
+                }
+                while e < chars.len() && is_word_char(chars[e]) {
+                    e += 1;
+                }
+                self.cursors = vec![(s, e)];
+            } else {
+                self.cursors = vec![(a, b)];
+            }
+            self.multi_cursor = true;
+        }
+        let (lo, hi) = {
+            let c = self.cursors[0];
+            (c.0.min(c.1), c.0.max(c.1))
+        };
+        if lo == hi {
+            self.status = "Select a word or some text first".into();
+            return;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let needle: Vec<char> = chars[lo..hi].to_vec();
+        let from = self
+            .cursors
+            .iter()
+            .map(|c| c.0.max(c.1))
+            .max()
+            .unwrap_or(hi);
+        let find_from = |start: usize| -> Option<usize> {
+            if needle.is_empty() || chars.len() < needle.len() {
+                return None;
+            }
+            let mut i = start;
+            while i + needle.len() <= chars.len() {
+                if chars[i..i + needle.len()] == needle[..] {
+                    return Some(i);
+                }
+                i += 1;
+            }
+            None
+        };
+        let found = find_from(from).or_else(|| find_from(0));
+        if let Some(start) = found {
+            let cand = (start, start + needle.len());
+            if !self.cursors.contains(&cand) {
+                let primary = self.cursors[0];
+                let mut rest: Vec<(usize, usize)> = self
+                    .cursors
+                    .iter()
+                    .copied()
+                    .filter(|c| *c != primary)
+                    .collect();
+                rest.push(cand);
+                rest.sort_by_key(|&(a, b)| (a.min(b), a.max(b)));
+                rest.insert(0, primary);
+                self.cursors = rest;
+                self.status = format!(
+                    "{} cursors · {}:{}",
+                    self.cursors.len(),
+                    "occurrence",
+                    needle.iter().collect::<String>()
+                );
+            } else {
+                self.status = "All occurrences already selected".into();
+            }
+        } else {
+            self.status = "No further occurrence".into();
+        }
+        if let Some(primary) = self.cursors.first().copied() {
+            Self::store_editor_range(ctx, id, primary);
+        }
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+
+    /// Ctrl+Alt+Up/Down: add a caret on the line above / below.
+    fn add_cursor_vertical(&mut self, ctx: &egui::Context, delta: i32) {
+        let idx = self.active;
+        let Some(text) = self.tabs.get(idx).map(|t| t.text.clone()) else {
+            return;
+        };
+        let id = egui::Id::new(("editor", idx, 0u8));
+        if !self.multi_cursor {
+            let r = Self::editor_state_range(ctx, id).unwrap_or((0, 0));
+            self.cursors = vec![(r.0, r.1)];
+            self.multi_cursor = true;
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let primary = self.cursors[0];
+        let head = primary.1.min(chars.len());
+        let (line, col) = char_line_col(&chars, head);
+        let target = if delta < 0 {
+            line.saturating_sub(1)
+        } else {
+            line + 1
+        };
+        if target == line {
+            return;
+        }
+        let at = index_at_line_col(&chars, target, col);
+        let cand = (at, at);
+        if !self.cursors.contains(&cand) {
+            let mut rest: Vec<(usize, usize)> = self
+                .cursors
+                .iter()
+                .copied()
+                .filter(|c| *c != primary)
+                .collect();
+            rest.push(cand);
+            rest.sort_by_key(|&(a, b)| (a.min(b), a.max(b)));
+            rest.insert(0, primary);
+            self.cursors = rest;
+            self.status = format!("{} cursors", self.cursors.len());
+        }
+        Self::store_editor_range(ctx, id, primary);
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+
     fn editor_ui(&mut self, ui: &mut egui::Ui, idx: usize, pane: u8) {
         if self.config.vim {
             self.vim_editor_ui(ui, idx);
@@ -8221,6 +8488,8 @@ impl EncryptedNoteApp {
         let snapshot = self.tabs[idx].text.clone();
         let miss = self.misspellings_for(&snapshot);
         let id = egui::Id::new(("editor", idx, pane));
+        let multi_here = pane == 0 && self.multi_cursor;
+
         // Highlight find matches in the active pane while the find bar is open.
         let highlights: Vec<(usize, usize)> = if pane == 0 && self.find_open {
             Self::find_matches(&snapshot, &self.find_query, self.find_case)
@@ -8231,23 +8500,45 @@ impl EncryptedNoteApp {
         // Apply a pending find/replace selection before drawing the widget.
         if pane == 0 {
             if let Some((a, b)) = self.pending_select.take() {
-                let mut state =
-                    egui::text_edit::TextEditState::load(ui.ctx(), id).unwrap_or_default();
-                state
-                    .cursor
-                    .set_char_range(Some(egui::text::CCursorRange::two(
-                        egui::text::CCursor::new(a),
-                        egui::text::CCursor::new(b),
-                    )));
-                state.store(ui.ctx(), id);
+                Self::store_editor_range(ui.ctx(), id, (a, b));
+                self.multi_cursor = false;
+                self.cursors.clear();
                 if !self.find_open {
                     ui.memory_mut(|m| m.request_focus(id));
                 }
             }
         }
 
-        let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
-            let mut job = markdown::wysiwyg_job(text, size, concealed, &miss);
+        // Caret/selection for element-level WYSIWYG reveal.
+        let primary = if multi_here {
+            self.cursors.first().copied()
+        } else {
+            Self::editor_state_range(ui.ctx(), id)
+        }
+        .unwrap_or((0, 0));
+        let chars: Vec<char> = snapshot.chars().collect();
+        let byte_of = |ci: usize| -> usize {
+            chars
+                .iter()
+                .take(ci.min(chars.len()))
+                .map(|c| c.len_utf8())
+                .sum()
+        };
+        let lo = primary.0.min(primary.1);
+        let hi = primary.0.max(primary.1);
+        let caret_byte = Some(byte_of(primary.1));
+        let sel_byte = Some((byte_of(lo), byte_of(hi)));
+
+        let miss_for_layout = miss.clone();
+        let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+            let mut job = markdown::wysiwyg_job(
+                text,
+                size,
+                concealed,
+                &miss_for_layout,
+                caret_byte,
+                sel_byte,
+            );
             markdown::apply_highlights(&mut job, &highlights);
             if wrap_width.is_finite() && wrap_width > 0.0 {
                 job.wrap.max_width = wrap_width;
@@ -8255,10 +8546,17 @@ impl EncryptedNoteApp {
             ui.fonts(|f| f.layout_job(job))
         };
 
+        let mut clicked_resp: Option<egui::Response> = None;
+        let mut text_after = String::new();
+        let mut rect_after = egui::Rect::NOTHING;
+        let mut wrap_after = 0.0f32;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .id_source(("editor_scroll", idx, pane))
             .show(ui, |ui| {
+                if multi_here {
+                    self.multi_input(ui, idx, id);
+                }
                 let tab = &mut self.tabs[idx];
                 let before = tab.text.clone();
                 let resp = ui.add(
@@ -8267,6 +8565,7 @@ impl EncryptedNoteApp {
                         .desired_width(f32::INFINITY)
                         .desired_rows(30)
                         .lock_focus(true)
+                        .margin(egui::vec2(0.0, 0.0))
                         .layouter(&mut layouter),
                 );
                 if resp.changed() && tab.text != before {
@@ -8276,7 +8575,82 @@ impl EncryptedNoteApp {
                     }
                     tab.redo.clear();
                 }
+                text_after = tab.text.clone();
+                rect_after = resp.rect;
+                wrap_after = resp.rect.width();
+                clicked_resp = Some(resp);
             });
+
+        // Secondary carets / selections (the primary is drawn by TextEdit).
+        let multi_here = pane == 0 && self.multi_cursor && self.cursors.len() > 1;
+        if multi_here && rect_after.is_positive() {
+            let mut job =
+                markdown::wysiwyg_job(&text_after, size, concealed, &miss, caret_byte, sel_byte);
+            if wrap_after > 0.0 {
+                job.wrap.max_width = wrap_after;
+            }
+            let galley = ui.fonts(|f| f.layout_job(job));
+            let origin = rect_after.min;
+            let painter = ui.painter();
+            for (n, c) in self.cursors.iter().enumerate() {
+                if n == 0 {
+                    continue;
+                }
+                let (a, b) = (c.0.min(c.1), c.0.max(c.1));
+                if a != b {
+                    let ra = galley.pos_from_ccursor(egui::text::CCursor::new(a));
+                    let rb = galley.pos_from_ccursor(egui::text::CCursor::new(b));
+                    if (ra.min.y - rb.min.y).abs() < 1.0 {
+                        let sel = egui::Rect::from_min_max(
+                            origin + ra.min.to_vec2(),
+                            origin + egui::vec2(rb.min.x, rb.max.y),
+                        );
+                        painter.rect_filled(sel, 0.0, theme::ACCENT.linear_multiply(0.28));
+                    }
+                }
+                let r = galley.pos_from_ccursor(egui::text::CCursor::new(c.1));
+                let caret = egui::Rect::from_min_size(
+                    origin + r.min.to_vec2(),
+                    egui::vec2(1.6, r.height().max(6.0)),
+                );
+                painter.rect_filled(caret, 0.0, theme::ACCENT);
+            }
+
+            // Alt+click adds a caret; a plain click collapses to one.
+            if let Some(resp) = &clicked_resp {
+                if resp.clicked() {
+                    let alt = ui.input(|i| i.modifiers.alt);
+                    if alt {
+                        if let Some(pos) = resp.interact_pointer_pos() {
+                            let local = pos - rect_after.min;
+                            let idx_c = galley.cursor_from_pos(local).ccursor.index;
+                            let cand = (idx_c, idx_c);
+                            if !self.cursors.contains(&cand) {
+                                let primary = self.cursors[0];
+                                self.cursors.push(cand);
+                                let mut rest: Vec<(usize, usize)> = self
+                                    .cursors
+                                    .iter()
+                                    .copied()
+                                    .filter(|c| *c != primary)
+                                    .collect();
+                                rest.sort_by_key(|&(a, b)| (a.min(b), a.max(b)));
+                                rest.insert(0, primary);
+                                self.cursors = rest;
+                            }
+                        }
+                    } else {
+                        self.multi_cursor = false;
+                        self.cursors.clear();
+                    }
+                }
+            }
+        }
+        if pane == 0 && self.multi_cursor {
+            if let Some(primary) = self.cursors.first().copied() {
+                Self::store_editor_range(ui.ctx(), id, primary);
+            }
+        }
     }
 
     /// Send the viewport commands for the current window mode.
@@ -8540,7 +8914,8 @@ impl EncryptedNoteApp {
                         }
                         let mut tmp = line.clone();
                         let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
-                            let mut job = markdown::wysiwyg_job(text, size, concealed, &miss);
+                            let mut job =
+                                markdown::wysiwyg_job(text, size, concealed, &miss, None, None);
                             if wrap_width.is_finite() && wrap_width > 0.0 {
                                 job.wrap.max_width = wrap_width;
                             }
@@ -9788,6 +10163,19 @@ impl EncryptedNoteApp {
             self.open_palette();
         }
 
+        // Multi-cursor shortcuts.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::D)) {
+            self.add_next_occurrence(ctx);
+        }
+        let add_up = egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowUp);
+        let add_down =
+            egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::ArrowDown);
+        if ctx.input_mut(|i| i.consume_shortcut(&add_up)) {
+            self.add_cursor_vertical(ctx, -1);
+        } else if ctx.input_mut(|i| i.consume_shortcut(&add_down)) {
+            self.add_cursor_vertical(ctx, 1);
+        }
+
         // Undo / redo.
         let undo = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
         let redo = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
@@ -10004,6 +10392,8 @@ impl eframe::App for EncryptedNoteApp {
         let current = self.tabs.get(self.active).map(|t| t.path.clone());
         if current != self.last_active {
             self.last_active = current;
+            self.multi_cursor = false;
+            self.cursors.clear();
             self.recompute_backlinks();
         }
     }
@@ -10577,6 +10967,231 @@ fn extract_reference(body: &str, target: &str) -> String {
     lines[s..end].join("\n")
 }
 
+/// One editing operation applied to every cursor at once.
+#[derive(Clone, Debug)]
+enum MultiEdit {
+    Insert(String),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    LeftSel,
+    RightSel,
+    Up,
+    Down,
+    UpSel,
+    DownSel,
+    Home,
+    HomeSel,
+    End,
+    EndSel,
+    WordLeft,
+    WordRight,
+    WordLeftSel,
+    WordRightSel,
+}
+
+fn char_line_col(chars: &[char], idx: usize) -> (usize, usize) {
+    let idx = idx.min(chars.len());
+    let line = chars[..idx].iter().filter(|c| **c == '\n').count();
+    let start = chars[..idx]
+        .iter()
+        .rposition(|c| *c == '\n')
+        .map_or(0, |p| p + 1);
+    (line, idx - start)
+}
+
+fn line_start_index(chars: &[char], idx: usize) -> usize {
+    chars[..idx.min(chars.len())]
+        .iter()
+        .rposition(|c| *c == '\n')
+        .map_or(0, |p| p + 1)
+}
+
+fn line_end_index(chars: &[char], idx: usize) -> usize {
+    let idx = idx.min(chars.len());
+    chars[idx..]
+        .iter()
+        .position(|c| *c == '\n')
+        .map_or(chars.len(), |p| idx + p)
+}
+
+fn index_at_line_col(chars: &[char], line: usize, col: usize) -> usize {
+    let mut cur_line = 0;
+    let mut i = 0;
+    while cur_line < line && i < chars.len() {
+        if chars[i] == '\n' {
+            cur_line += 1;
+        }
+        i += 1;
+    }
+    let end = line_end_index(chars, i);
+    (i + col).min(end)
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+fn word_left(chars: &[char], idx: usize) -> usize {
+    let mut i = idx.min(chars.len());
+    while i > 0 && !is_word_char(chars[i - 1]) {
+        i -= 1;
+    }
+    while i > 0 && is_word_char(chars[i - 1]) {
+        i -= 1;
+    }
+    i
+}
+
+fn word_right(chars: &[char], idx: usize) -> usize {
+    let n = chars.len();
+    let mut i = idx.min(n);
+    while i < n && !is_word_char(chars[i]) {
+        i += 1;
+    }
+    while i < n && is_word_char(chars[i]) {
+        i += 1;
+    }
+    i
+}
+
+/// Apply `edit` at every cursor. `cursors[0]` is the primary caret; the
+/// returned vector keeps the primary first.
+fn apply_multi_edit(
+    text: &str,
+    cursors: &[(usize, usize)],
+    edit: &MultiEdit,
+) -> (String, Vec<(usize, usize)>) {
+    let mut chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let clamp = |x: usize| x.min(n);
+    let mut cur: Vec<(usize, usize)> = cursors
+        .iter()
+        .map(|(a, b)| (clamp(*a), clamp(*b)))
+        .collect();
+    if cur.is_empty() {
+        cur.push((0, 0));
+    }
+    let dedupe = |v: Vec<(usize, usize)>| -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for c in v {
+            if !out.contains(&c) {
+                out.push(c);
+            }
+        }
+        out
+    };
+    cur = dedupe(cur);
+
+    let text_edit = matches!(
+        edit,
+        MultiEdit::Insert(_) | MultiEdit::Backspace | MultiEdit::Delete
+    );
+    if text_edit {
+        // Apply from the rightmost range to the leftmost so earlier offsets
+        // stay valid, then recompute every caret.
+        let mut order: Vec<usize> = (0..cur.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(cur[i].0.min(cur[i].1)));
+        let mut newpos = vec![0usize; cur.len()];
+        for &i in &order {
+            let (a, b) = (cur[i].0.min(cur[i].1), cur[i].0.max(cur[i].1));
+            match edit {
+                MultiEdit::Insert(t) => {
+                    let ins: Vec<char> = t.chars().collect();
+                    chars.splice(a..b, ins.iter().cloned());
+                    newpos[i] = a + ins.len();
+                }
+                MultiEdit::Backspace => {
+                    if a != b {
+                        chars.drain(a..b);
+                        newpos[i] = a;
+                    } else if a > 0 {
+                        chars.remove(a - 1);
+                        newpos[i] = a - 1;
+                    } else {
+                        newpos[i] = a;
+                    }
+                }
+                MultiEdit::Delete => {
+                    if a != b {
+                        chars.drain(a..b);
+                        newpos[i] = a;
+                    } else if a < chars.len() {
+                        chars.remove(a);
+                        newpos[i] = a;
+                    } else {
+                        newpos[i] = a;
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        cur = newpos.into_iter().map(|p| (p, p)).collect();
+    } else {
+        for c in cur.iter_mut() {
+            let (anchor, head) = *c;
+            let mut a = anchor;
+            let h = head;
+            // A non-extending move collapses the selection to its active end.
+            if !matches!(
+                edit,
+                MultiEdit::LeftSel
+                    | MultiEdit::RightSel
+                    | MultiEdit::UpSel
+                    | MultiEdit::DownSel
+                    | MultiEdit::HomeSel
+                    | MultiEdit::EndSel
+                    | MultiEdit::WordLeftSel
+                    | MultiEdit::WordRightSel
+            ) {
+                a = h;
+            }
+            let extend = matches!(
+                edit,
+                MultiEdit::LeftSel
+                    | MultiEdit::RightSel
+                    | MultiEdit::UpSel
+                    | MultiEdit::DownSel
+                    | MultiEdit::HomeSel
+                    | MultiEdit::EndSel
+                    | MultiEdit::WordLeftSel
+                    | MultiEdit::WordRightSel
+            );
+            let new_head = match edit {
+                MultiEdit::Left | MultiEdit::LeftSel => h.saturating_sub(1),
+                MultiEdit::Right | MultiEdit::RightSel => (h + 1).min(n),
+                MultiEdit::Home | MultiEdit::HomeSel => line_start_index(&chars, h),
+                MultiEdit::End | MultiEdit::EndSel => line_end_index(&chars, h),
+                MultiEdit::WordLeft | MultiEdit::WordLeftSel => word_left(&chars, h),
+                MultiEdit::WordRight | MultiEdit::WordRightSel => word_right(&chars, h),
+                MultiEdit::Up | MultiEdit::UpSel | MultiEdit::Down | MultiEdit::DownSel => {
+                    let (line, col) = char_line_col(&chars, h);
+                    let target = if matches!(edit, MultiEdit::Up | MultiEdit::UpSel) {
+                        line.saturating_sub(1)
+                    } else {
+                        line + 1
+                    };
+                    index_at_line_col(&chars, target, col)
+                }
+                _ => h,
+            };
+            *c = if extend {
+                (a, new_head)
+            } else {
+                (new_head, new_head)
+            };
+        }
+    }
+    // Keep the primary first, then order the rest by position.
+    cur = dedupe(cur);
+    let primary = cur[0];
+    let mut rest: Vec<(usize, usize)> = cur.into_iter().filter(|c| *c != primary).collect();
+    rest.sort_by_key(|&(a, b)| (a.min(b), a.max(b)));
+    rest.insert(0, primary);
+    (chars.into_iter().collect(), rest)
+}
+
 /// Seconds since the Unix epoch, as `f64`.
 fn now_secs() -> f64 {
     std::time::SystemTime::now()
@@ -11004,6 +11619,45 @@ mod tests {
         let ci = load_color_image(&path).unwrap();
         assert_eq!(ci.size, [2, 1]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_edit_inserts_at_every_cursor() {
+        let text = "foo bar foo";
+        let cursors = vec![(0, 0), (8, 8)];
+        let (out, cur) = apply_multi_edit(text, &cursors, &MultiEdit::Insert("X".into()));
+        assert_eq!(out, "Xfoo bar Xfoo");
+        assert_eq!(cur, vec![(1, 1), (9, 9)]);
+    }
+
+    #[test]
+    fn multi_edit_backspace_and_delete() {
+        let text = "aaa bbb";
+        let cursors = vec![(1, 1), (6, 6)];
+        let (out, cur) = apply_multi_edit(text, &cursors, &MultiEdit::Backspace);
+        assert_eq!(out, "aa bb");
+        assert_eq!(cur, vec![(0, 0), (5, 5)]);
+        let (out2, _) = apply_multi_edit(&out, &[(0, 0), (4, 4)], &MultiEdit::Delete);
+        assert_eq!(out2, "a b");
+    }
+
+    #[test]
+    fn multi_edit_vertical_motion_keeps_column() {
+        let text = "abc\ndef\nghi";
+        let cursors = vec![(1, 1)];
+        let (_, down) = apply_multi_edit(text, &cursors, &MultiEdit::Down);
+        assert_eq!(down, vec![(5, 5)]);
+        let (_, up) = apply_multi_edit(text, &down, &MultiEdit::Up);
+        assert_eq!(up, vec![(1, 1)]);
+    }
+
+    #[test]
+    fn multi_edit_selection_replacement() {
+        let text = "one two three";
+        let cursors = vec![(0, 3)];
+        let (out, cur) = apply_multi_edit(text, &cursors, &MultiEdit::Insert("1".into()));
+        assert_eq!(out, "1 two three");
+        assert_eq!(cur, vec![(1, 1)]);
     }
 
     #[test]

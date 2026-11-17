@@ -1075,6 +1075,8 @@ pub fn wysiwyg_job(
     base_size: f32,
     conceal: bool,
     misspelled: &std::collections::HashSet<String>,
+    caret: Option<usize>,
+    sel: Option<(usize, usize)>,
 ) -> egui::text::LayoutJob {
     let mut job = egui::text::LayoutJob {
         break_on_newline: true,
@@ -1089,7 +1091,9 @@ pub fn wysiwyg_job(
             .map(|p| start + p)
             .unwrap_or(text.len());
         let line = &text[start..end];
-        push_wysiwyg_line(&mut job, line, base_size, conceal, misspelled);
+        push_wysiwyg_line(
+            &mut job, line, base_size, conceal, misspelled, start, caret, sel,
+        );
         if end >= text.len() {
             break;
         }
@@ -1097,6 +1101,43 @@ pub fn wysiwyg_job(
         start = end + 1;
     }
     job
+}
+
+/// Whether the caret / selection touches the absolute byte span `[a, b]`.
+fn reveal_span(a: usize, b: usize, caret: Option<usize>, sel: Option<(usize, usize)>) -> bool {
+    if let Some(c) = caret {
+        if c >= a && c <= b {
+            return true;
+        }
+    }
+    if let Some((x, y)) = sel {
+        if x < y && a < y && b > x {
+            return true;
+        }
+    }
+    false
+}
+
+/// Line-start anchor used to know whether the caret sits on this line.
+fn line_is_active(
+    line_start: usize,
+    line_len: usize,
+    caret: Option<usize>,
+    sel: Option<(usize, usize)>,
+) -> bool {
+    let a = line_start;
+    let b = line_start + line_len;
+    if let Some(c) = caret {
+        if c >= a && c <= b {
+            return true;
+        }
+    }
+    if let Some((x, y)) = sel {
+        if x < y && a < y && b > x {
+            return true;
+        }
+    }
+    false
 }
 
 /// Overlay find-match highlights onto an existing [`LayoutJob`] without
@@ -1152,18 +1193,23 @@ fn hidden_format() -> egui::text::TextFormat {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_wysiwyg_line(
     job: &mut egui::text::LayoutJob,
     line: &str,
     base_size: f32,
     conceal: bool,
     misspelled: &std::collections::HashSet<String>,
+    line_start: usize,
+    caret: Option<usize>,
+    sel: Option<(usize, usize)>,
 ) {
     if line.is_empty() {
         return;
     }
     let trimmed = line.trim_start();
     let indent = line.len() - trimmed.len();
+    let active = line_is_active(line_start, line.len(), caret, sel);
 
     // Fenced code lines are shown verbatim in a muted monospace face.
     if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
@@ -1180,12 +1226,21 @@ fn push_wysiwyg_line(
         return;
     }
 
-    // Headings: hide the `#` markers and scale the text.
+    // Headings: hide the `#` markers and scale the text (revealed on the
+    // caret's line, like Obsidian).
     if conceal {
         let hashes = trimmed.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&hashes) && trimmed.chars().nth(hashes).is_some_and(|c| c == ' ') {
             let prefix = indent + hashes + 1;
-            job.append(&line[..prefix], 0.0, hidden_format());
+            if active {
+                job.append(
+                    &line[..prefix],
+                    0.0,
+                    base_format(base_size, Color32::from_gray(0x8a)),
+                );
+            } else {
+                job.append(&line[..prefix], 0.0, hidden_format());
+            }
             let scale = match hashes {
                 1 => 1.5,
                 2 => 1.3,
@@ -1200,10 +1255,13 @@ fn push_wysiwyg_line(
                 InlineFlags::default(),
                 conceal,
                 misspelled,
+                line_start + prefix,
+                caret,
+                sel,
             );
             return;
         }
-        // Blockquotes: hide `> ` and mute the text.
+        // Blockquotes: hide `> ` and mute the text (revealed on the caret line).
         if trimmed.starts_with('>') {
             let mut prefix = indent;
             while line[prefix..].starts_with('>') {
@@ -1212,19 +1270,47 @@ fn push_wysiwyg_line(
                     prefix += 1;
                 }
             }
-            job.append(&line[..prefix], 0.0, hidden_format());
+            if active {
+                job.append(
+                    &line[..prefix],
+                    0.0,
+                    base_format(base_size, Color32::from_gray(0x8a)),
+                );
+            } else {
+                job.append(&line[..prefix], 0.0, hidden_format());
+            }
             let fmt = base_format(base_size, Color32::from_gray(0xa8));
             let flags = InlineFlags {
                 italic: true,
                 ..Default::default()
             };
-            emit_inline(job, &line[prefix..], fmt, flags, conceal, misspelled);
+            emit_inline(
+                job,
+                &line[prefix..],
+                fmt,
+                flags,
+                conceal,
+                misspelled,
+                line_start + prefix,
+                caret,
+                sel,
+            );
             return;
         }
     }
 
     let fmt = base_format(base_size, crate::theme::TEXT);
-    emit_inline(job, line, fmt, InlineFlags::default(), conceal, misspelled);
+    emit_inline(
+        job,
+        line,
+        fmt,
+        InlineFlags::default(),
+        conceal,
+        misspelled,
+        line_start,
+        caret,
+        sel,
+    );
 }
 
 fn style_for(
@@ -1315,6 +1401,7 @@ fn push_word(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_inline(
     job: &mut egui::text::LayoutJob,
     s: &str,
@@ -1322,10 +1409,22 @@ fn emit_inline(
     initial: InlineFlags,
     conceal: bool,
     misspelled: &std::collections::HashSet<String>,
+    offset: usize,
+    caret: Option<usize>,
+    sel: Option<(usize, usize)>,
 ) {
+    #[derive(Clone, Copy)]
+    enum Marker {
+        Bold,
+        Strike,
+        Code,
+        Italic,
+    }
     let mut flags = initial;
     let mut i = 0usize;
     let mut plain = 0usize;
+    // Closing marker positions that were revealed together with their opening.
+    let mut revealed: Vec<(usize, Marker)> = Vec::new();
 
     macro_rules! flush {
         ($end:expr) => {
@@ -1339,40 +1438,63 @@ fn emit_inline(
             }
         };
     }
+    macro_rules! toggle {
+        ($m:expr) => {
+            match $m {
+                Marker::Bold => flags.bold = !flags.bold,
+                Marker::Strike => flags.strike = !flags.strike,
+                Marker::Code => flags.code = !flags.code,
+                Marker::Italic => flags.italic = !flags.italic,
+            }
+        };
+    }
 
     while i < s.len() {
         let rest = &s[i..];
         if conceal {
+            // A closing marker whose opener we revealed: show it literally.
+            if let Some(pos) = revealed.iter().position(|(at, _)| *at == i) {
+                let (_, kind) = revealed.remove(pos);
+                let len = match kind {
+                    Marker::Bold | Marker::Strike => 2,
+                    Marker::Code | Marker::Italic => 1,
+                };
+                flush!(i);
+                job.append(&s[i..i + len], 0.0, base.clone());
+                toggle!(kind);
+                i += len;
+                plain = i;
+                continue;
+            }
             // Bold / strikethrough / code / italic markers.
-            if rest.starts_with("**") || rest.starts_with("__") {
+            let marker = if rest.starts_with("**") || rest.starts_with("__") {
+                Some(("**", 2, Marker::Bold))
+            } else if rest.starts_with("~~") {
+                Some(("~~", 2, Marker::Strike))
+            } else if rest.starts_with('`') {
+                Some(("`", 1, Marker::Code))
+            } else if rest.starts_with('*') || rest.starts_with('_') {
+                Some(("*", 1, Marker::Italic))
+            } else {
+                None
+            };
+            if let Some((pat, len, kind)) = marker {
+                let close = s[i + len..]
+                    .find(pat)
+                    .map(|p| i + len + p)
+                    .filter(|c| *c > i + len - 1);
+                let show =
+                    close.is_some_and(|c| reveal_span(offset + i, offset + c + len, caret, sel));
                 flush!(i);
-                job.append(&s[i..i + 2], 0.0, hidden_format());
-                flags.bold = !flags.bold;
-                i += 2;
-                plain = i;
-                continue;
-            }
-            if rest.starts_with("~~") {
-                flush!(i);
-                job.append(&s[i..i + 2], 0.0, hidden_format());
-                flags.strike = !flags.strike;
-                i += 2;
-                plain = i;
-                continue;
-            }
-            if rest.starts_with('`') {
-                flush!(i);
-                job.append(&s[i..i + 1], 0.0, hidden_format());
-                flags.code = !flags.code;
-                i += 1;
-                plain = i;
-                continue;
-            }
-            if rest.starts_with('*') || rest.starts_with('_') {
-                flush!(i);
-                job.append(&s[i..i + 1], 0.0, hidden_format());
-                flags.italic = !flags.italic;
-                i += 1;
+                if show {
+                    let c = close.unwrap();
+                    job.append(&s[i..i + len], 0.0, base.clone());
+                    revealed.push((c, kind));
+                } else {
+                    job.append(&s[i..i + len], 0.0, hidden_format());
+                }
+                toggle!(kind);
+                i += len;
                 plain = i;
                 continue;
             }
@@ -1382,11 +1504,15 @@ fn emit_inline(
                     let inner = &rest[3..close];
                     let (target, alias) = split_wiki(inner);
                     flush!(i);
-                    job.append("![[", 0.0, hidden_format());
-                    let shown = if alias.is_empty() { target } else { alias };
-                    let fmt = style_for(&base, flags, true);
-                    emit_text(job, shown, fmt, misspelled);
-                    job.append("]]", 0.0, hidden_format());
+                    if reveal_span(offset + i, offset + i + close + 2, caret, sel) {
+                        job.append(&s[i..i + close + 2], 0.0, base.clone());
+                    } else {
+                        job.append("![[", 0.0, hidden_format());
+                        let shown = if alias.is_empty() { target } else { alias };
+                        let fmt = style_for(&base, flags, true);
+                        emit_text(job, shown, fmt, misspelled);
+                        job.append("]]", 0.0, hidden_format());
+                    }
                     i += close + 2;
                     plain = i;
                     continue;
@@ -1395,18 +1521,22 @@ fn emit_inline(
             // Wikilinks `[[target|alias]]`: show the alias (or target).
             if rest.starts_with("[[") {
                 if let Some(close) = rest.find("]]") {
-                    let inner = &rest[2..close];
-                    let (target, alias) = split_wiki(inner);
                     flush!(i);
-                    job.append("[[", 0.0, hidden_format());
-                    let fmt = style_for(&base, flags, true);
-                    if alias.is_empty() {
-                        emit_text(job, target, fmt, misspelled);
+                    if reveal_span(offset + i, offset + i + close + 2, caret, sel) {
+                        job.append(&s[i..i + close + 2], 0.0, base.clone());
                     } else {
-                        job.append(&inner[..inner.len() - alias.len()], 0.0, hidden_format());
-                        emit_text(job, alias, fmt, misspelled);
+                        let inner = &rest[2..close];
+                        let (target, alias) = split_wiki(inner);
+                        job.append("[[", 0.0, hidden_format());
+                        let fmt = style_for(&base, flags, true);
+                        if alias.is_empty() {
+                            emit_text(job, target, fmt, misspelled);
+                        } else {
+                            job.append(&inner[..inner.len() - alias.len()], 0.0, hidden_format());
+                            emit_text(job, alias, fmt, misspelled);
+                        }
+                        job.append("]]", 0.0, hidden_format());
                     }
-                    job.append("]]", 0.0, hidden_format());
                     i += close + 2;
                     plain = i;
                     continue;
@@ -1419,11 +1549,16 @@ fn emit_inline(
                         let label = &rest[1..mid];
                         if !label.is_empty() && !label.contains('\n') {
                             flush!(i);
-                            job.append("[", 0.0, hidden_format());
-                            let fmt = style_for(&base, flags, true);
-                            emit_text(job, label, fmt, misspelled);
-                            job.append(&rest[mid..mid + 3 + close], 0.0, hidden_format());
-                            i += mid + 3 + close;
+                            let end = mid + 3 + close;
+                            if reveal_span(offset + i, offset + i + end, caret, sel) {
+                                job.append(&s[i..i + end], 0.0, base.clone());
+                            } else {
+                                job.append("[", 0.0, hidden_format());
+                                let fmt = style_for(&base, flags, true);
+                                emit_text(job, label, fmt, misspelled);
+                                job.append(&rest[mid..end], 0.0, hidden_format());
+                            }
+                            i += end;
                             plain = i;
                             continue;
                         }
@@ -1533,6 +1668,54 @@ mod tests {
         assert!(is_table_sep("|---|:---:|---|"));
         assert!(!is_table_sep("| a | b |"));
         assert!(is_table_sep("|---|---|"));
+    }
+
+    fn section_at(job: &egui::text::LayoutJob, byte: usize) -> &egui::text::LayoutSection {
+        job.sections
+            .iter()
+            .find(|s| s.byte_range.start <= byte && byte < s.byte_range.end)
+            .expect("section at byte")
+    }
+
+    #[test]
+    fn wysiwyg_conceals_markers_away_from_caret() {
+        let miss = std::collections::HashSet::new();
+        let text = "a **bold** b";
+        let job = wysiwyg_job(text, 14.0, true, &miss, Some(0), Some((0, 0)));
+        assert_eq!(job.text, text, "layout text must stay byte-identical");
+        let marker = section_at(&job, 2);
+        assert!(marker.format.font_id.size < 2.0, "marker should be hidden");
+    }
+
+    #[test]
+    fn wysiwyg_reveals_markers_at_caret() {
+        let miss = std::collections::HashSet::new();
+        let text = "a **bold** b";
+        // Caret inside the bold run.
+        let job = wysiwyg_job(text, 14.0, true, &miss, Some(5), Some((5, 5)));
+        let marker = section_at(&job, 2);
+        assert!(
+            marker.format.font_id.size >= 13.0,
+            "marker should be visible"
+        );
+        // Heading markers appear on the caret's line.
+        let head = "# Title";
+        let job = wysiwyg_job(head, 14.0, true, &miss, Some(3), Some((3, 3)));
+        let hash = section_at(&job, 0);
+        assert!(hash.format.font_id.size >= 13.0);
+        let job = wysiwyg_job(head, 14.0, true, &miss, Some(0), Some((0, 0)));
+        let hash = section_at(&job, 0);
+        assert!(hash.format.font_id.size >= 13.0);
+        let job = wysiwyg_job(
+            "# Title\n\ntext",
+            14.0,
+            true,
+            &miss,
+            Some(12),
+            Some((12, 12)),
+        );
+        let hash = section_at(&job, 0);
+        assert!(hash.format.font_id.size < 2.0, "inactive heading hides #");
     }
 
     #[test]
