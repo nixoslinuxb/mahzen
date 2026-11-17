@@ -62,6 +62,9 @@ pub struct Config {
     /// Underline misspelled words in the editor.
     #[serde(default)]
     pub spellcheck: bool,
+    /// UI language: `"en"` or `"tr"`.
+    #[serde(default = "default_lang")]
+    pub language: String,
     /// Startup window mode: `"fullscreen"`, `"maximized"`, or `"windowed"`.
     #[serde(default = "default_window_mode")]
     pub window_mode: String,
@@ -132,6 +135,10 @@ fn default_force() -> f32 {
     1.0
 }
 
+fn default_lang() -> String {
+    "en".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -146,6 +153,7 @@ impl Default for Config {
             vim: false,
             wysiwyg: true,
             spellcheck: false,
+            language: default_lang(),
             window_mode: default_window_mode(),
             bookmarks: Vec::new(),
             linked_pane: false,

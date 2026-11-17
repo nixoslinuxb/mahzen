@@ -44,14 +44,18 @@ fn take_label(tex: &mut String, number: usize) {
 
 /// Replace `\ref{name}` with the recorded equation number.
 fn expand_refs(tex: &mut String) {
-    while let Some(start) = tex.find("\\ref{") {
-        if let Some(end) = tex[start..].find('}') {
-            let name = tex[start + 5..start + end].to_string();
+    for cmd in ["\\eqref", "\\autoref", "\\ref"] {
+        let paren = cmd != "\\ref";
+        let open = format!("{cmd}{{");
+        while let Some(start) = tex.find(&open) {
+            let Some(end) = tex[start..].find('}') else {
+                break;
+            };
+            let name = tex[start + open.len()..start + end].to_string();
             let n = EQ_LABELS.with(|m| m.borrow().get(&name).copied());
-            let repl = n.map(|n| n.to_string()).unwrap_or_else(|| "??".into());
+            let num = n.map(|n| n.to_string()).unwrap_or_else(|| "??".into());
+            let repl = if paren { format!("({num})") } else { num };
             tex.replace_range(start..start + end + 1, &repl);
-        } else {
-            break;
         }
     }
 }
@@ -1716,6 +1720,20 @@ mod tests {
         );
         let hash = section_at(&job, 0);
         assert!(hash.format.font_id.size < 2.0, "inactive heading hides #");
+    }
+
+    #[test]
+    fn eqref_and_ref_expand_to_numbers() {
+        reset_equations();
+        let n = next_equation();
+        take_label(&mut "\\label{energy}".to_string(), n);
+        let mut t = "see \\eqref{energy} and \\ref{energy}".to_string();
+        expand_refs(&mut t);
+        assert_eq!(t, "see (1) and 1");
+        let mut missing = "\\eqref{nope}".to_string();
+        expand_refs(&mut missing);
+        assert_eq!(missing, "(??)");
+        reset_equations();
     }
 
     #[test]

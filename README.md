@@ -274,6 +274,11 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
 - **Richer graph** — edges now show **direction arrows**, nodes can be coloured
   by tag via **colour groups** (persisted), and the force layout exposes
   **repulsion**/**attraction** sliders with a recompute button.
+- **LaTeX extras** — `\eqref{…}` / `\autoref{…}` (parenthesised cross
+  references), `\begin{array}{lcr}` column alignment (left/center/right),
+  `\color{name}` (rest of the group) and `\textcolor{name}{…}` with the
+  standard xcolor names, `\cancel` / `\bcancel` / `\xcancel` / `\sout`
+  strike-out decorations and `\boxed{…}` frames.
 - **LaTeX environments** — `\begin{equation}`/`align`/`gather`/`split`/
   `multline`/`matrix` environments, `\[ … \]`, automatic **equation
   numbering**, `\tag{…}`, `\label{…}` + `\ref{…}` cross-references, explicit
@@ -290,8 +295,12 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
 
 - **Settings window** — palette command *Settings* (or the pencil icon in the
   top bar) edits font size, concealed markdown, spell check, Vim mode, default
-  split view, linked pane, daily-notes folder/format/template, templates folder
-  and the startup window mode, then saves everything at once.
+  split view, linked pane, **UI language**, daily-notes
+  folder/format/template, templates folder and the startup window mode, then
+  saves everything at once.
+- **UI language** — English and **Türkçe**. The interface is translated live
+  from the Settings window (stored as `language` in `config.json`); missing
+  translations fall back to English, so the UI never breaks.
 - **Bookmarks** — star the active note (*Bookmark / unbookmark current note* or
   the star icon). The sidebar lists them and can open a **random bookmark**;
   *Open a random note* picks from the whole vault.

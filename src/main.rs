@@ -14,6 +14,7 @@ mod desktop;
 mod feeds;
 mod frontmatter;
 mod graph;
+mod i18n;
 mod icons;
 mod index;
 mod markdown;
@@ -31,6 +32,20 @@ mod vault;
 mod vim;
 
 use eframe::egui;
+
+/// Translate a UI string (English source → current language).
+///
+/// `tr!("New note")` looks up a literal; `tr!("Bookmarks ({})", n)` fills the
+/// `{}` placeholders. Missing translations fall back to English.
+#[macro_export]
+macro_rules! tr {
+    ($s:literal) => {
+        $crate::i18n::t($s)
+    };
+    ($s:literal, $($a:expr),+ $(,)?) => {
+        $crate::i18n::tf($s, &[$(&$a as &dyn std::fmt::Display),+])
+    };
+}
 
 fn main() -> eframe::Result<()> {
     // Enforce Wayland: we deliberately do not support X11 or XWayland.

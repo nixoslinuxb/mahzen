@@ -82,10 +82,10 @@ enum PwRowAction {
 impl AttachKind {
     fn label(self) -> &'static str {
         match self {
-            AttachKind::Image => "image",
-            AttachKind::Audio => "voice recording / audio",
-            AttachKind::Video => "video",
-            AttachKind::Pdf => "PDF",
+            AttachKind::Image => crate::tr!("image"),
+            AttachKind::Audio => crate::tr!("voice recording / audio"),
+            AttachKind::Video => crate::tr!("video"),
+            AttachKind::Pdf => crate::tr!("PDF"),
         }
     }
     fn matches(self, ext: &str) -> bool {
@@ -273,16 +273,16 @@ impl WindowMode {
     }
     fn as_str(self) -> &'static str {
         match self {
-            WindowMode::Fullscreen => "fullscreen",
-            WindowMode::Maximized => "maximized",
-            WindowMode::Windowed => "windowed",
+            WindowMode::Fullscreen => crate::tr!("fullscreen"),
+            WindowMode::Maximized => crate::tr!("maximized"),
+            WindowMode::Windowed => crate::tr!("windowed"),
         }
     }
     fn label(self) -> &'static str {
         match self {
-            WindowMode::Fullscreen => "Fullscreen",
-            WindowMode::Maximized => "Maximized",
-            WindowMode::Windowed => "Windowed",
+            WindowMode::Fullscreen => crate::tr!("Fullscreen"),
+            WindowMode::Maximized => crate::tr!("Maximized"),
+            WindowMode::Windowed => crate::tr!("Windowed"),
         }
     }
     fn next(self) -> Self {
@@ -393,43 +393,43 @@ impl Command {
 
     fn label(self) -> &'static str {
         match self {
-            Command::NewNote => "New note",
-            Command::NewSubnote => "New sub-note (under current note)",
-            Command::OpenVault => "Open vault",
-            Command::DailyNote => "Open today's daily note",
-            Command::DailyPrev => "Open previous daily note",
-            Command::DailyNext => "Open next daily note",
-            Command::DailySettings => "Daily notes settings",
-            Command::NewFromTemplate => "New note from template",
-            Command::NewCanvas => "New canvas",
-            Command::OpenCanvas => "Open canvas board",
-            Command::OpenFeeds => "RSS feeds",
-            Command::OpenPasswords => "Password manager",
-            Command::Undo => "Undo",
-            Command::Redo => "Redo",
-            Command::WindowMode => "Cycle window mode (F11)",
-            Command::ToggleVim => "Toggle Vim mode",
-            Command::TogglePreview => "Cycle editor view (edit/split/preview)",
-            Command::ToggleWysiwyg => "Toggle concealed markdown (WYSIWYG editing)",
-            Command::ToggleSpellcheck => "Toggle spell check",
-            Command::ToggleSplitPane => "Toggle second note pane (split view)",
-            Command::FindInNote => "Find / replace in current note (Ctrl+F)",
-            Command::ColumnEdit => "Column edit / multi-cursor insert",
-            Command::Properties => "Edit note properties (frontmatter)",
-            Command::TagManager => "Manage tags (rename / merge / delete)",
-            Command::EditTable => "Edit table visually",
-            Command::CopyBlockRef => "Copy block reference for the current line",
-            Command::Settings => "Settings",
-            Command::RandomNote => "Open a random note",
-            Command::ToggleBookmark => "Bookmark / unbookmark current note",
-            Command::NoteComposer => "Note composer (merge / split)…",
-            Command::VoiceNote => "Record a voice note",
-            Command::ToggleLinkedPane => "Toggle linked second pane",
-            Command::TogglePanel => "Toggle side panel",
-            Command::ToggleGraph => "Toggle graph view",
-            Command::Lock => "Lock the vault",
-            Command::CloseTab => "Close current tab",
-            Command::Quit => "Quit",
+            Command::NewNote => crate::tr!("New note"),
+            Command::NewSubnote => crate::tr!("New sub-note (under current note)"),
+            Command::OpenVault => crate::tr!("Open vault"),
+            Command::DailyNote => crate::tr!("Open today's daily note"),
+            Command::DailyPrev => crate::tr!("Open previous daily note"),
+            Command::DailyNext => crate::tr!("Open next daily note"),
+            Command::DailySettings => crate::tr!("Daily notes settings"),
+            Command::NewFromTemplate => crate::tr!("New note from template"),
+            Command::NewCanvas => crate::tr!("New canvas"),
+            Command::OpenCanvas => crate::tr!("Open canvas board"),
+            Command::OpenFeeds => crate::tr!("RSS feeds"),
+            Command::OpenPasswords => crate::tr!("Password manager"),
+            Command::Undo => crate::tr!("Undo"),
+            Command::Redo => crate::tr!("Redo"),
+            Command::WindowMode => crate::tr!("Cycle window mode (F11)"),
+            Command::ToggleVim => crate::tr!("Toggle Vim mode"),
+            Command::TogglePreview => crate::tr!("Cycle editor view (edit/split/preview)"),
+            Command::ToggleWysiwyg => crate::tr!("Toggle concealed markdown (WYSIWYG editing)"),
+            Command::ToggleSpellcheck => crate::tr!("Toggle spell check"),
+            Command::ToggleSplitPane => crate::tr!("Toggle second note pane (split view)"),
+            Command::FindInNote => crate::tr!("Find / replace in current note (Ctrl+F)"),
+            Command::ColumnEdit => crate::tr!("Column edit / multi-cursor insert"),
+            Command::Properties => crate::tr!("Edit note properties (frontmatter)"),
+            Command::TagManager => crate::tr!("Manage tags (rename / merge / delete)"),
+            Command::EditTable => crate::tr!("Edit table visually"),
+            Command::CopyBlockRef => crate::tr!("Copy block reference for the current line"),
+            Command::Settings => crate::tr!("Settings"),
+            Command::RandomNote => crate::tr!("Open a random note"),
+            Command::ToggleBookmark => crate::tr!("Bookmark / unbookmark current note"),
+            Command::NoteComposer => crate::tr!("Note composer (merge / split)…"),
+            Command::VoiceNote => crate::tr!("Record a voice note"),
+            Command::ToggleLinkedPane => crate::tr!("Toggle linked second pane"),
+            Command::TogglePanel => crate::tr!("Toggle side panel"),
+            Command::ToggleGraph => crate::tr!("Toggle graph view"),
+            Command::Lock => crate::tr!("Lock the vault"),
+            Command::CloseTab => crate::tr!("Close current tab"),
+            Command::Quit => crate::tr!("Quit"),
         }
     }
 
@@ -847,6 +847,7 @@ impl EncryptedNoteApp {
         let initial_bookmarks = config.bookmarks.clone();
         let initial_show_right = config.show_right;
         let initial_window_mode = config.window_mode.clone();
+        crate::i18n::set(crate::i18n::Lang::from_code(&config.language));
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         // Enable SVG (and raster) image loading for the icon set.
         egui_extras::install_image_loaders(&cc.egui_ctx);
@@ -1312,11 +1313,11 @@ impl EncryptedNoteApp {
     fn toggle_split_pane(&mut self) {
         if self.secondary.is_some() {
             self.secondary = None;
-            self.status = "Second pane closed".into();
+            self.status = crate::tr!("Second pane closed").into();
             return;
         }
         if self.tabs.is_empty() {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         }
         let pick = if self.tabs.len() > 1 {
@@ -1406,7 +1407,7 @@ impl EncryptedNoteApp {
         let text = tab.text.clone();
         let matches = Self::find_matches(&text, &self.find_query, self.find_case);
         if matches.is_empty() {
-            self.status = format!("No matches for '{}'", self.find_query);
+            self.status = crate::tr!("No matches for '{}'", self.find_query);
             return;
         }
         let idx = self.find_match % matches.len();
@@ -1424,7 +1425,7 @@ impl EncryptedNoteApp {
         let text = tab.text.clone();
         let count = Self::find_matches(&text, &self.find_query, self.find_case).len();
         if count == 0 {
-            self.status = format!("No matches for '{}'", self.find_query);
+            self.status = crate::tr!("No matches for '{}'", self.find_query);
             return;
         }
         self.find_match = if forward {
@@ -1487,14 +1488,14 @@ impl EncryptedNoteApp {
         tab.redo.clear();
         tab.text = out;
         self.find_match = 0;
-        self.status = format!("Replaced {count} occurrence(s)");
+        self.status = crate::tr!("Replaced {} occurrence(s)", count);
     }
 
     /// Open the column edit dialog, pre-filling the line range with the current
     /// selection (or just the caret's line).
     fn open_column_edit(&mut self, ctx: &egui::Context) {
         let Some(tab) = self.tabs.get(self.active) else {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         };
         let text = tab.text.clone();
@@ -1562,13 +1563,13 @@ impl EncryptedNoteApp {
         tab.redo.clear();
         tab.text = new_text;
         self.column_edit_open = false;
-        self.status = format!("Edited {changed} line(s)");
+        self.status = crate::tr!("Edited {} line(s)", changed);
     }
 
     /// Find the first table (or the one at the caret) and open the visual editor.
     fn open_table_editor(&mut self) {
         let Some(tab) = self.tabs.get(self.active) else {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         };
         let text = tab.text.clone();
@@ -1594,7 +1595,7 @@ impl EncryptedNoteApp {
             i += 1;
         }
         let Some((start, end)) = found else {
-            self.status = "No table found in this note".into();
+            self.status = crate::tr!("No table found in this note").into();
             return;
         };
         let parse = |line: &str| -> Vec<String> {
@@ -1650,7 +1651,7 @@ impl EncryptedNoteApp {
         tab.text = new_text;
         self.table_edit_open = false;
         self.rebuild_index();
-        self.status = "Table updated".into();
+        self.status = crate::tr!("Table updated").into();
     }
 
     /// Insert a `^block-id` at the end of the current line and copy a
@@ -1658,7 +1659,7 @@ impl EncryptedNoteApp {
     fn copy_block_reference(&mut self, ctx: &egui::Context) {
         let idx = self.active;
         let Some(tab) = self.tabs.get(idx) else {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         };
         let text = tab.text.clone();
@@ -1692,7 +1693,7 @@ impl EncryptedNoteApp {
         tab.text = new_text;
         let reference = format!("[[{title}#^{final_id}]]");
         self.pending_clipboard = Some(reference.clone());
-        self.status = format!("Copied {reference}");
+        self.status = crate::tr!("Copied {}", reference);
     }
 
     /// Show `path` in the second pane (opening a tab for it if needed).
@@ -1731,21 +1732,21 @@ impl EncryptedNoteApp {
             .unwrap_or(0);
         let idx = t % paths.len();
         self.pending_open = Some(paths[idx].clone());
-        self.status = "Random note".into();
+        self.status = crate::tr!("Random note").into();
     }
 
     /// Star / unstar the active note and persist the bookmark list.
     fn toggle_bookmark(&mut self) {
         let Some(path) = self.tabs.get(self.active).map(|t| t.path.clone()) else {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         };
         if let Some(pos) = self.bookmarks.iter().position(|p| *p == path) {
             self.bookmarks.remove(pos);
-            self.status = "Bookmark removed".into();
+            self.status = crate::tr!("Bookmark removed").into();
         } else {
             self.bookmarks.push(path);
-            self.status = "Note bookmarked".into();
+            self.status = crate::tr!("Note bookmarked").into();
         }
         self.config.bookmarks = self.bookmarks.clone();
         self.config.save();
@@ -1753,7 +1754,7 @@ impl EncryptedNoteApp {
 
     fn open_composer(&mut self) {
         if self.tabs.is_empty() {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         }
         self.composer_open = true;
@@ -1767,7 +1768,7 @@ impl EncryptedNoteApp {
     fn apply_composer(&mut self, ctx: &egui::Context) {
         let idx = self.active;
         let Some(tab) = self.tabs.get(idx) else {
-            self.composer_error = Some("Open a note first".into());
+            self.composer_error = Some(crate::tr!("Open a note first").into());
             return;
         };
         let source_path = tab.path.clone();
@@ -1833,7 +1834,7 @@ impl EncryptedNoteApp {
                 self.composer_target.trim().to_string()
             };
             let Some(crypto) = self.crypto.as_ref() else {
-                self.composer_error = Some("Vault is locked".into());
+                self.composer_error = Some(crate::tr!("Vault is locked").into());
                 return;
             };
             let contents = crypto.encrypt(&tail);
@@ -1898,15 +1899,15 @@ impl EncryptedNoteApp {
                 .unwrap_or_default();
             let seconds = now_secs() - started;
             self.insert_into_active(&format!("![[{rel}]]\n"));
-            self.status = format!("Saved voice note · {name} · {seconds:.0}s");
+            self.status = crate::tr!("Saved voice note · {}", format!("{name} · {seconds:.0}s"));
             return;
         }
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
-            self.status = "Open a vault first".into();
+            self.status = crate::tr!("Open a vault first").into();
             return;
         };
         if self.tabs.is_empty() {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         }
         let (y, m, d) = crate::dates::today();
@@ -1926,9 +1927,9 @@ impl EncryptedNoteApp {
         match child {
             Ok(child) => {
                 self.voice_recording = Some((child, file, now_secs()));
-                self.status = "Recording… run Voice note again to stop".into();
+                self.status = crate::tr!("Recording… run Voice note again to stop").into();
             }
-            Err(_) => self.status = "Could not start ffmpeg".into(),
+            Err(_) => self.status = crate::tr!("Could not start ffmpeg").into(),
         }
     }
 
@@ -1980,7 +1981,7 @@ impl EncryptedNoteApp {
         };
         let idx = self.active;
         let Some(tab) = self.tabs.get(idx) else {
-            self.prop_error = Some("Open a note first".into());
+            self.prop_error = Some(crate::tr!("Open a note first").into());
             return;
         };
         let old = tab.text.clone();
@@ -2005,7 +2006,7 @@ impl EncryptedNoteApp {
             .unwrap_or_else(|| tab.title.clone());
         self.prop_edit_open = false;
         self.rebuild_index();
-        self.status = format!("Property '{key}' saved");
+        self.status = crate::tr!("Property '{}' saved", key);
     }
 
     fn delete_property(&mut self) {
@@ -2024,7 +2025,7 @@ impl EncryptedNoteApp {
         tab.text = new_text;
         self.prop_edit_open = false;
         self.rebuild_index();
-        self.status = format!("Property '{key}' removed");
+        self.status = crate::tr!("Property '{}' removed", key);
     }
 
     /// Rename (or merge into an existing tag) / delete a tag in every note.
@@ -2076,9 +2077,9 @@ impl EncryptedNoteApp {
         self.tag_manager_open = false;
         self.rebuild_index();
         self.status = if delete {
-            format!("Deleted tag '{from}' from every note")
+            crate::tr!("Deleted tag '{}' from every note", from)
         } else {
-            format!("Renamed tag '{from}' → '{to}'")
+            crate::tr!("Renamed tag '{}' → '{}'", from, to)
         };
     }
 
@@ -2093,9 +2094,9 @@ impl EncryptedNoteApp {
         match self.write_note(&path, &text) {
             Ok(()) => {
                 self.tabs[idx].saved = text;
-                self.status = format!("Saved · {title}");
+                self.status = crate::tr!("Saved · {}", title);
             }
-            Err(e) => self.status = format!("Save failed: {e}"),
+            Err(e) => self.status = crate::tr!("Save failed: {}", e),
         }
     }
 
@@ -2136,7 +2137,7 @@ impl EncryptedNoteApp {
 
     fn create_note(&mut self, name: &str) -> bool {
         if name.trim().is_empty() {
-            self.status = "Enter a note name".into();
+            self.status = crate::tr!("Enter a note name").into();
             return false;
         }
         let Some(crypto) = self.crypto.as_ref() else {
@@ -2153,7 +2154,7 @@ impl EncryptedNoteApp {
             Some(path) => {
                 self.refresh_vault();
                 self.open_note(path);
-                self.status = format!("Created · {name}");
+                self.status = crate::tr!("Created · {}", name);
                 true
             }
             None => {
@@ -2171,7 +2172,7 @@ impl EncryptedNoteApp {
     /// note-plus-folder convention).
     fn create_subnote(&mut self, parent: &Path, name: &str) -> bool {
         if name.trim().is_empty() {
-            self.status = "Enter a sub-note name".into();
+            self.status = crate::tr!("Enter a sub-note name").into();
             return false;
         }
         let Some(crypto) = self.crypto.as_ref() else {
@@ -2194,7 +2195,7 @@ impl EncryptedNoteApp {
         }
         self.refresh_vault();
         self.open_note(path);
-        self.status = format!("Created sub-note · {stem}");
+        self.status = crate::tr!("Created sub-note · {}", stem);
         true
     }
 
@@ -2218,9 +2219,9 @@ impl EncryptedNoteApp {
                 }
                 self.refresh_vault();
                 self.last_active = None;
-                self.status = format!("Renamed to {stem}");
+                self.status = crate::tr!("Renamed to {}", stem);
             }
-            Err(e) => self.status = format!("Rename failed: {e}"),
+            Err(e) => self.status = crate::tr!("Rename failed: {}", e),
         }
     }
 
@@ -2233,9 +2234,9 @@ impl EncryptedNoteApp {
                 }
                 self.refresh_vault();
                 self.last_active = None;
-                self.status = "Note deleted".into();
+                self.status = crate::tr!("Note deleted").into();
             }
-            Err(e) => self.status = format!("Delete failed: {e}"),
+            Err(e) => self.status = crate::tr!("Delete failed: {}", e),
         }
     }
 
@@ -2376,7 +2377,7 @@ impl EncryptedNoteApp {
         let mut close = false;
         let mut move_sel = 0i32;
 
-        egui::Window::new("Command palette")
+        egui::Window::new(crate::tr!("Command palette"))
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
@@ -2386,7 +2387,7 @@ impl EncryptedNoteApp {
                 let state = self.palette.as_mut().unwrap();
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut state.query)
-                        .hint_text("Type a note or command…")
+                        .hint_text(crate::tr!("Type a note or command…"))
                         .desired_width(f32::INFINITY),
                 );
                 if state.focus {
@@ -2395,7 +2396,7 @@ impl EncryptedNoteApp {
                 }
                 ui.separator();
                 if results.is_empty() {
-                    ui.weak("No matches");
+                    ui.weak(crate::tr!("No matches"));
                 }
                 let selected = state.selected;
                 for (n, &idx) in results.iter().enumerate() {
@@ -2473,7 +2474,7 @@ impl EncryptedNoteApp {
                     self.subnote_open = true;
                     self.subnote_error = None;
                 } else {
-                    self.status = "Open a note first".into();
+                    self.status = crate::tr!("Open a note first").into();
                 }
             }
             Command::OpenVault => self.open_picker(),
@@ -2489,7 +2490,7 @@ impl EncryptedNoteApp {
                     .map(|v| v.template_paths(&dir))
                     .unwrap_or_default();
                 if templates.is_empty() {
-                    self.status = format!("No templates in '{dir}/'");
+                    self.status = crate::tr!("No templates in '{}/'", dir);
                 } else if templates.len() == 1 {
                     self.new_from_template(templates[0].clone());
                 } else {
@@ -2618,7 +2619,7 @@ impl EncryptedNoteApp {
     /// Open (creating if needed) the daily note for an explicit date.
     fn open_daily_note_for(&mut self, y: i32, m: u32, d: u32) {
         let Some(vault) = self.vault.as_ref() else {
-            self.status = "Open a vault first".into();
+            self.status = crate::tr!("Open a vault first").into();
             return;
         };
         let dir = self.config.daily_dir.clone();
@@ -2708,7 +2709,7 @@ impl EncryptedNoteApp {
     /// Find and open the first `.canvas` board in the vault.
     fn open_canvas(&mut self) {
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
-            self.status = "Open a vault first".into();
+            self.status = crate::tr!("Open a vault first").into();
             return;
         };
         let mut found = Vec::new();
@@ -2766,7 +2767,7 @@ impl EncryptedNoteApp {
     /// Create a new empty `.canvas` in the vault and open it.
     fn create_canvas(&mut self, name: &str) {
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
-            self.status = "Open a vault first".into();
+            self.status = crate::tr!("Open a vault first").into();
             return;
         };
         let stem = Vault::sanitize_name(name);
@@ -2782,7 +2783,7 @@ impl EncryptedNoteApp {
                 self.open_canvas_path(path);
                 self.status = format!("Created canvas · {stem}");
             }
-            Err(e) => self.status = format!("Create canvas failed: {e}"),
+            Err(e) => self.status = crate::tr!("Create canvas failed: {}", e),
         }
     }
 
@@ -3325,7 +3326,7 @@ impl EncryptedNoteApp {
                 dragged_now = true;
             }
             resp.context_menu(|ui| {
-                if ui.button("Edit").clicked() {
+                if ui.button(crate::tr!("Edit")).clicked() {
                     ctx_edit = Some(id.clone());
                     ui.close_menu();
                 }
@@ -3341,7 +3342,7 @@ impl EncryptedNoteApp {
                         ui.close_menu();
                     }
                 });
-                if ui.button("Delete").clicked() {
+                if ui.button(crate::tr!("Delete")).clicked() {
                     ctx_del = Some(id.clone());
                     ui.close_menu();
                 }
@@ -3608,7 +3609,7 @@ impl EncryptedNoteApp {
         if save {
             match self.write_canvas(&view.path, &view.data) {
                 Ok(()) => self.status = "Canvas saved".into(),
-                Err(e) => self.status = format!("Canvas save failed: {e}"),
+                Err(e) => self.status = crate::tr!("Canvas save failed: {}", e),
             }
         }
         if close {
@@ -3743,7 +3744,7 @@ impl EncryptedNoteApp {
     fn feeds_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             icons::icon(ui, Icon::Rss, 16.0, theme::ACCENT);
-            ui.label(RichText::new("RSS feeds").strong());
+            ui.label(RichText::new(crate::tr!("RSS feeds")).strong());
             ui.separator();
             if icons::button(
                 ui,
@@ -3757,7 +3758,7 @@ impl EncryptedNoteApp {
             {
                 self.refresh_feeds();
             }
-            if icons::button(ui, Icon::Add, 16.0, true, false, "Add feed").clicked() {
+            if icons::button(ui, Icon::Add, 16.0, true, false, crate::tr!("Add feed")).clicked() {
                 self.feed_add_open = true;
                 self.feed_url.clear();
                 self.feed_title.clear();
@@ -3843,7 +3844,7 @@ impl EncryptedNoteApp {
                 ui.separator();
                 if self.feeds.feeds.is_empty() {
                     ui.add_space(6.0);
-                    ui.weak("No feeds yet. Use ＋ to add one.");
+                    ui.weak(crate::tr!("No feeds yet. Use ＋ to add one."));
                 }
                 for (cat, ids) in groups {
                     let heading = if cat.trim().is_empty() {
@@ -4027,7 +4028,7 @@ impl EncryptedNoteApp {
                         if items.is_empty() {
                             ui.add_space(8.0);
                             ui.weak(if fid == 0 {
-                                "No saved articles yet — press the bookmark icon on an article."
+                                crate::tr!("No saved articles yet — press the bookmark icon on an article.")
                             } else {
                                 "No articles — press Refresh."
                             });
@@ -4189,7 +4190,7 @@ impl EncryptedNoteApp {
             let editing = self.feed_edit_id.is_some();
             let mut submit = false;
             let mut cancel = false;
-            egui::Window::new("Feed")
+            egui::Window::new(crate::tr!("Feed"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
@@ -4212,7 +4213,11 @@ impl EncryptedNoteApp {
                             .desired_width(f32::INFINITY),
                     );
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Category (optional)").small().weak());
+                    ui.label(
+                        RichText::new(crate::tr!("Category (optional)"))
+                            .small()
+                            .weak(),
+                    );
                     ui.add(
                         egui::TextEdit::singleline(&mut self.feed_category)
                             .hint_text("News, Tech, …")
@@ -4220,10 +4225,14 @@ impl EncryptedNoteApp {
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if icons::button(ui, Icon::Check, 20.0, true, false, "Save").clicked() {
+                        if icons::button(ui, Icon::Check, 20.0, true, false, crate::tr!("Save"))
+                            .clicked()
+                        {
                             submit = true;
                         }
-                        if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             cancel = true;
                         }
                     });
@@ -4272,7 +4281,7 @@ impl EncryptedNoteApp {
                 .unwrap_or_default();
             let mut confirm = false;
             let mut cancel = false;
-            egui::Window::new("Delete feed")
+            egui::Window::new(crate::tr!("Delete feed"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
@@ -4280,10 +4289,14 @@ impl EncryptedNoteApp {
                     ui.label(format!("Remove feed '{name}'?"));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if icons::danger_button(ui, Icon::Trash, 20.0, true, "Delete").clicked() {
+                        if icons::danger_button(ui, Icon::Trash, 20.0, true, crate::tr!("Delete"))
+                            .clicked()
+                        {
                             confirm = true;
                         }
-                        if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             cancel = true;
                         }
                     });
@@ -4311,11 +4324,11 @@ impl EncryptedNoteApp {
     /// Copy a file into `<vault>/assets/` and reference it from the active note.
     fn attach_file(&mut self, src: &Path) {
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
-            self.status = "Open a vault first".into();
+            self.status = crate::tr!("Open a vault first").into();
             return;
         };
         if self.tabs.is_empty() {
-            self.status = "Open a note first".into();
+            self.status = crate::tr!("Open a note first").into();
             return;
         }
         let assets = root.join("assets");
@@ -4375,7 +4388,7 @@ impl EncryptedNoteApp {
                 self.tabs[idx].saved = text;
                 self.status = format!("Attached {rel}");
             }
-            Err(e) => self.status = format!("Save failed: {e}"),
+            Err(e) => self.status = crate::tr!("Save failed: {}", e),
         }
     }
 
@@ -4840,7 +4853,7 @@ impl EncryptedNoteApp {
             password: String::new(),
             error: None,
         };
-        self.status = "Locked".into();
+        self.status = crate::tr!("Locked").into();
     }
 
     /// After a successful unlock, reopen the last vault.
@@ -4958,7 +4971,7 @@ impl EncryptedNoteApp {
         self.after_unlock();
         if self.vault.is_none() {
             self.open_picker();
-            self.status = "Choose a folder to use as your vault".into();
+            self.status = crate::tr!("Choose a folder to use as your vault").into();
         }
     }
 
@@ -4996,7 +5009,7 @@ impl EncryptedNoteApp {
                         icons::icon(ui, Icon::Warning, 44.0, Color32::from_rgb(0xf9, 0xe2, 0xaf));
                         ui.add_space(12.0);
                         ui.label(
-                            RichText::new("Record your master password")
+                            RichText::new(crate::tr!("Record your master password"))
                                 .size(22.0)
                                 .strong(),
                         );
@@ -5099,9 +5112,9 @@ impl EncryptedNoteApp {
                             egui::Image::new(egui::include_image!("../assets/logo.svg")),
                         );
                         ui.add_space(12.0);
-                        ui.label(RichText::new("Encrypted Note").size(28.0).strong());
+                        ui.label(RichText::new(crate::tr!("Encrypted Note")).size(28.0).strong());
                         ui.add_space(2.0);
-                        ui.label(RichText::new("AES-256 encrypted markdown vault").weak());
+                        ui.label(RichText::new(crate::tr!("AES-256 encrypted markdown vault")).weak());
                     });
                     ui.add_space(22.0);
 
@@ -5111,7 +5124,7 @@ impl EncryptedNoteApp {
                             confirm,
                             error,
                         } => {
-                            ui.label(RichText::new("Create a master password").strong());
+                            ui.label(RichText::new(crate::tr!("Create a master password")).strong());
                             ui.add_space(4.0);
                             ui.label(
                                 RichText::new(
@@ -5125,14 +5138,14 @@ impl EncryptedNoteApp {
                                 egui::TextEdit::singleline(&mut *password)
                                     .id(egui::Id::new("gate_pw"))
                                     .password(true)
-                                    .hint_text("Master password")
+                                    .hint_text(crate::tr!("Master password"))
                                     .desired_width(f32::INFINITY),
                             );
                             ui.add_space(6.0);
                             ui.add(
                                 egui::TextEdit::singleline(&mut *confirm)
                                     .password(true)
-                                    .hint_text("Confirm password")
+                                    .hint_text(crate::tr!("Confirm password"))
                                     .desired_width(f32::INFINITY),
                             );
                             ui.add_space(10.0);
@@ -5188,7 +5201,7 @@ impl EncryptedNoteApp {
                                     ui.label(RichText::new(fmt_duration(secs)).size(26.0).strong());
                                 });
                             } else {
-                                ui.label(RichText::new("Enter your master password").strong());
+                                ui.label(RichText::new(crate::tr!("Enter your master password")).strong());
                                 ui.add_space(12.0);
                                 let resp = ui
                                     .horizontal(|ui| {
@@ -5203,7 +5216,7 @@ impl EncryptedNoteApp {
                                             egui::TextEdit::singleline(&mut *password)
                                                 .id(egui::Id::new("gate_pw"))
                                                 .password(!show_pw)
-                                                .hint_text("Master password")
+                                                .hint_text(crate::tr!("Master password"))
                                                 .desired_width(w),
                                         );
                                         if icons::button(
@@ -5251,7 +5264,7 @@ impl EncryptedNoteApp {
                                 );
                                 let bresp = bresp
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text("Unlock");
+                                    .on_hover_text(crate::tr!("Unlock"));
                                 if bresp.clicked() || enter {
                                     action = GateAction::Unlock;
                                 }
@@ -5272,7 +5285,7 @@ impl EncryptedNoteApp {
                                         forgot = true;
                                     }
                                     ui.label(
-                                        RichText::new("Forgot password?")
+                                        RichText::new(crate::tr!("Forgot password?"))
                                             .color(theme::LINK)
                                             .small(),
                                     );
@@ -5322,7 +5335,7 @@ impl EncryptedNoteApp {
         if self.confirm_forgot {
             let mut confirm = false;
             let mut cancel = false;
-            egui::Window::new("Erase everything?")
+            egui::Window::new(crate::tr!("Erase everything?"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
@@ -5333,8 +5346,10 @@ impl EncryptedNoteApp {
                         icons::icon(ui, Icon::Warning, 18.0, theme::DANGER);
                         ui.colored_label(
                             theme::DANGER,
-                            RichText::new("Everything will be lost. This cannot be undone.")
-                                .strong(),
+                            RichText::new(crate::tr!(
+                                "Everything will be lost. This cannot be undone."
+                            ))
+                            .strong(),
                         );
                     });
                     ui.add_space(8.0);
@@ -5356,7 +5371,9 @@ impl EncryptedNoteApp {
                         {
                             confirm = true;
                         }
-                        if icons::button(ui, Icon::Close, 24.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 24.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             cancel = true;
                         }
                     });
@@ -5625,7 +5642,16 @@ impl EncryptedNoteApp {
             }
             ui.label(RichText::new("Favorites only").small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::FolderPlus, 14.0, true, false, "New folder").clicked() {
+                if icons::button(
+                    ui,
+                    Icon::FolderPlus,
+                    14.0,
+                    true,
+                    false,
+                    crate::tr!("New folder"),
+                )
+                .clicked()
+                {
                     self.pw_new_folder_open = true;
                     self.pw_new_folder_name.clear();
                 }
@@ -5766,7 +5792,10 @@ impl EncryptedNoteApp {
                             },
                         );
                         if ui
-                            .selectable_label(sel, RichText::new("Uncategorized").strong())
+                            .selectable_label(
+                                sel,
+                                RichText::new(crate::tr!("Uncategorized")).strong(),
+                            )
                             .clicked()
                         {
                             toggle = Some(String::new());
@@ -5948,10 +5977,14 @@ impl EncryptedNoteApp {
                         .strong(),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Trash, 18.0, true, false, "Delete").clicked() {
+                        if icons::button(ui, Icon::Trash, 18.0, true, false, crate::tr!("Delete"))
+                            .clicked()
+                        {
                             act.del = true;
                         }
-                        if icons::button(ui, Icon::Edit, 18.0, true, false, "Edit").clicked() {
+                        if icons::button(ui, Icon::Edit, 18.0, true, false, crate::tr!("Edit"))
+                            .clicked()
+                        {
                             act.edit = true;
                         }
                         if icons::button(ui, Icon::Star, 18.0, true, entry.favorite, "Favorite")
@@ -6077,7 +6110,7 @@ impl EncryptedNoteApp {
                         act.copy = Some(("URL", entry.url.clone()));
                     }
                     if ui
-                        .link(RichText::new("Open in browser").color(theme::LINK))
+                        .link(RichText::new(crate::tr!("Open in browser")).color(theme::LINK))
                         .clicked()
                     {
                         act.open_url = Some(entry.url.clone());
@@ -6159,7 +6192,9 @@ impl EncryptedNoteApp {
                 ui.weak("This cannot be undone.");
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 18.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         open = false;
                     }
                     if icons::button(ui, Icon::Trash, 18.0, true, false, "Delete entry").clicked() {
@@ -6308,7 +6343,7 @@ impl EncryptedNoteApp {
                     passwords::entropy_bits(&editor.draft.password),
                 );
                 pw_field(ui, "Website", &mut editor.draft.url);
-                ui.label(RichText::new("Folder").small().weak());
+                ui.label(RichText::new(crate::tr!("Folder")).small().weak());
                 let folders = self.passwords.all_folders();
                 egui::ComboBox::from_id_source("pw_folder")
                     .selected_text(if editor.draft.category.trim().is_empty() {
@@ -6334,8 +6369,15 @@ impl EncryptedNoteApp {
                                 .hint_text("New folder name")
                                 .desired_width(w),
                         );
-                        if icons::button(ui, Icon::Check, 16.0, true, false, "Create folder")
-                            .clicked()
+                        if icons::button(
+                            ui,
+                            Icon::Check,
+                            16.0,
+                            true,
+                            false,
+                            crate::tr!("Create folder"),
+                        )
+                        .clicked()
                         {
                             let name = editor.new_folder_name.trim().to_string();
                             if !name.is_empty() {
@@ -6359,10 +6401,14 @@ impl EncryptedNoteApp {
                 }
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Check, 22.0, true, false, "Save").clicked() {
+                    if icons::button(ui, Icon::Check, 22.0, true, false, crate::tr!("Save"))
+                        .clicked()
+                    {
                         save = true;
                     }
-                    if icons::button(ui, Icon::Close, 22.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 22.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         cancel = true;
                     }
                 });
@@ -6410,7 +6456,7 @@ impl EncryptedNoteApp {
                 if !cat.is_empty() {
                     self.pw_expanded.insert(cat);
                 }
-                self.status = "Saved".into();
+                self.status = crate::tr!("Saved").into();
                 keep = false;
             }
         }
@@ -6466,10 +6512,14 @@ impl EncryptedNoteApp {
                 );
                 ui.add_space(6.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 16.0, true, false, "Close").clicked() {
+                    if icons::button(ui, Icon::Close, 16.0, true, false, crate::tr!("Close"))
+                        .clicked()
+                    {
                         open = false;
                     }
-                    if icons::button(ui, Icon::Copy, 16.0, true, false, "Copy").clicked() {
+                    if icons::button(ui, Icon::Copy, 16.0, true, false, crate::tr!("Copy"))
+                        .clicked()
+                    {
                         copy = true;
                     }
                     if icons::button(ui, Icon::Refresh, 16.0, true, false, "Regenerate").clicked() {
@@ -6551,7 +6601,7 @@ impl EncryptedNoteApp {
                 );
                 ui.add_space(10.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 16.0, true, false, "Close").clicked() {
+                    if icons::button(ui, Icon::Close, 16.0, true, false, crate::tr!("Close")).clicked() {
                         open = false;
                     }
                     if icons::button(ui, Icon::Download, 16.0, true, false, "Import from file").clicked() {
@@ -6589,7 +6639,7 @@ impl EncryptedNoteApp {
                 ui.set_width(320.0);
                 ui.horizontal(|ui| {
                     icons::icon(ui, Icon::FolderPlus, 16.0, theme::ACCENT);
-                    ui.label(RichText::new("New folder").strong());
+                    ui.label(RichText::new(crate::tr!("New folder")).strong());
                 });
                 ui.separator();
                 ui.add(
@@ -6599,7 +6649,9 @@ impl EncryptedNoteApp {
                 );
                 ui.add_space(8.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 18.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         open = false;
                     }
                     if icons::button(
@@ -6658,7 +6710,9 @@ impl EncryptedNoteApp {
                     );
                     ui.add_space(8.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Close, 18.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             open = false;
                         }
                         if icons::button(
@@ -6713,11 +6767,20 @@ impl EncryptedNoteApp {
                     ui.weak("Its entries move to Uncategorized; no entries are deleted.");
                     ui.add_space(8.0);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Close, 18.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             open = false;
                         }
-                        if icons::button(ui, Icon::Trash, 18.0, true, false, "Delete folder")
-                            .clicked()
+                        if icons::button(
+                            ui,
+                            Icon::Trash,
+                            18.0,
+                            true,
+                            false,
+                            crate::tr!("Delete folder"),
+                        )
+                        .clicked()
                         {
                             confirm = true;
                         }
@@ -6863,12 +6926,27 @@ impl EncryptedNoteApp {
                     .show(ui, |ui| {
                         ui.vertical_centered(|ui| {
                             // Core actions — larger icons, stacked top → bottom.
-                            if icons::button(ui, Icon::FolderOpen, 26.0, true, false, "Open vault")
-                                .clicked()
+                            if icons::button(
+                                ui,
+                                Icon::FolderOpen,
+                                26.0,
+                                true,
+                                false,
+                                crate::tr!("Open vault"),
+                            )
+                            .clicked()
                             {
                                 self.open_picker();
                             }
-                            if icons::button(ui, Icon::Add, 26.0, true, false, "New note").clicked()
+                            if icons::button(
+                                ui,
+                                Icon::Add,
+                                26.0,
+                                true,
+                                false,
+                                crate::tr!("New note"),
+                            )
+                            .clicked()
                             {
                                 self.new_note_open = true;
                                 self.new_note_error = None;
@@ -7060,7 +7138,15 @@ impl EncryptedNoteApp {
                         icons::icon(ui, Icon::Folder, 15.0, theme::ACCENT);
                         ui.label(RichText::new("Vault").strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if icons::button(ui, Icon::Add, 16.0, true, false, "New note").clicked()
+                            if icons::button(
+                                ui,
+                                Icon::Add,
+                                16.0,
+                                true,
+                                false,
+                                crate::tr!("New note"),
+                            )
+                            .clicked()
                             {
                                 self.new_note_open = true;
                                 self.new_note_error = None;
@@ -7202,8 +7288,15 @@ impl EncryptedNoteApp {
             .show(ctx, |ui| {
                 // Quick actions, above the calendar (left → right).
                 ui.horizontal(|ui| {
-                    if icons::button(ui, Icon::Refresh, 16.0, true, false, "Refresh vault")
-                        .clicked()
+                    if icons::button(
+                        ui,
+                        Icon::Refresh,
+                        16.0,
+                        true,
+                        false,
+                        crate::tr!("Refresh vault"),
+                    )
+                    .clicked()
                     {
                         self.refresh_vault();
                     }
@@ -7224,8 +7317,15 @@ impl EncryptedNoteApp {
                     {
                         self.show_graph = !self.show_graph;
                     }
-                    if icons::button(ui, Icon::Rss, 16.0, true, self.feeds_open, "RSS feeds")
-                        .clicked()
+                    if icons::button(
+                        ui,
+                        Icon::Rss,
+                        16.0,
+                        true,
+                        self.feeds_open,
+                        crate::tr!("RSS feeds"),
+                    )
+                    .clicked()
                     {
                         self.feeds_open = !self.feeds_open;
                     }
@@ -7262,18 +7362,20 @@ impl EncryptedNoteApp {
                     {
                         self.toggle_bookmark();
                     }
-                    if icons::button(ui, Icon::Edit, 16.0, true, false, "Settings").clicked() {
+                    if icons::button(ui, Icon::Edit, 16.0, true, false, crate::tr!("Settings"))
+                        .clicked()
+                    {
                         self.settings_open = true;
                     }
                 });
                 ui.separator();
 
                 // Bookmarks (starred notes)
-                egui::CollapsingHeader::new(format!("Bookmarks ({})", self.bookmarks.len()))
+                egui::CollapsingHeader::new(crate::tr!("Bookmarks ({})", self.bookmarks.len()))
                     .default_open(true)
                     .show(ui, |ui| {
                         if self.bookmarks.is_empty() {
-                            ui.weak("Star a note to bookmark it");
+                            ui.weak(crate::tr!("Star a note to bookmark it"));
                         }
                         let marks = self.bookmarks.clone();
                         for path in marks {
@@ -7296,7 +7398,7 @@ impl EncryptedNoteApp {
                             }
                         }
                         if !self.bookmarks.is_empty()
-                            && ui.small_button("Random bookmark").clicked()
+                            && ui.small_button(crate::tr!("Random bookmark")).clicked()
                         {
                             let n = self.bookmarks.len();
                             let t = std::time::SystemTime::now()
@@ -7308,7 +7410,7 @@ impl EncryptedNoteApp {
                     });
 
                 // Calendar (daily notes)
-                egui::CollapsingHeader::new("Calendar")
+                egui::CollapsingHeader::new(crate::tr!("Calendar"))
                     .default_open(true)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -7445,7 +7547,7 @@ impl EncryptedNoteApp {
                         ui.separator();
 
                         // Tags (vault-wide, hierarchical)
-                        egui::CollapsingHeader::new("Tags")
+                        egui::CollapsingHeader::new(crate::tr!("Tags"))
                             .default_open(false)
                             .show(ui, |ui| {
                                 if icons::button(
@@ -7464,7 +7566,7 @@ impl EncryptedNoteApp {
                                 }
                                 let tree = self.index.tag_tree();
                                 if tree.is_empty() {
-                                    ui.weak("No tags yet");
+                                    ui.weak(crate::tr!("No tags yet"));
                                 }
                                 let mut clicked_tag: Option<String> = None;
                                 for node in &tree {
@@ -7479,11 +7581,11 @@ impl EncryptedNoteApp {
 
                         // Properties (frontmatter)
                         let props = frontmatter::properties(&text);
-                        egui::CollapsingHeader::new(format!("Properties ({})", props.len()))
+                        egui::CollapsingHeader::new(crate::tr!("Properties ({})", props.len()))
                             .default_open(true)
                             .show(ui, |ui| {
                                 if props.is_empty() {
-                                    ui.weak("No frontmatter properties");
+                                    ui.weak(crate::tr!("No frontmatter properties"));
                                 }
                                 for (key, value) in &props {
                                     ui.horizontal(|ui| {
@@ -7506,12 +7608,12 @@ impl EncryptedNoteApp {
                             });
 
                         // Outline
-                        egui::CollapsingHeader::new("Outline")
+                        egui::CollapsingHeader::new(crate::tr!("Outline"))
                             .default_open(true)
                             .show(ui, |ui| {
                                 let heads = markdown::headings(&text);
                                 if heads.is_empty() {
-                                    ui.weak("No headings");
+                                    ui.weak(crate::tr!("No headings"));
                                 }
                                 for (level, heading) in heads {
                                     let indent = ((level.saturating_sub(1)) as f32) * 10.0;
@@ -7523,14 +7625,14 @@ impl EncryptedNoteApp {
                             });
 
                         // Outgoing links
-                        egui::CollapsingHeader::new("Outgoing links")
+                        egui::CollapsingHeader::new(crate::tr!("Outgoing links"))
                             .default_open(true)
                             .show(ui, |ui| {
                                 let mut links = markdown::wikilinks(&text);
                                 links.sort();
                                 links.dedup();
                                 if links.is_empty() {
-                                    ui.weak("No [[wikilinks]]");
+                                    ui.weak(crate::tr!("No [[wikilinks]]"));
                                 }
                                 for link in links {
                                     let resolved = self.resolve_link(&link).is_some();
@@ -7563,11 +7665,11 @@ impl EncryptedNoteApp {
 
                         // Backlinks
                         let count = self.backlinks.len();
-                        egui::CollapsingHeader::new(format!("Backlinks ({count})"))
+                        egui::CollapsingHeader::new(crate::tr!("Backlinks ({})", count))
                             .default_open(true)
                             .show(ui, |ui| {
                                 if self.backlinks.is_empty() {
-                                    ui.weak("No notes link here yet");
+                                    ui.weak(crate::tr!("No notes link here yet"));
                                 }
                                 let links = self.backlinks.clone();
                                 for (path, line_no, snippet) in links {
@@ -7598,11 +7700,11 @@ impl EncryptedNoteApp {
 
                         // Unlinked mentions
                         let ucount = self.unlinked.len();
-                        egui::CollapsingHeader::new(format!("Unlinked mentions ({ucount})"))
+                        egui::CollapsingHeader::new(crate::tr!("Unlinked mentions ({})", ucount))
                             .default_open(false)
                             .show(ui, |ui| {
                                 if self.unlinked.is_empty() {
-                                    ui.weak("No unlinked mentions");
+                                    ui.weak(crate::tr!("No unlinked mentions"));
                                 }
                                 let links = self.unlinked.clone();
                                 for (path, line_no, snippet) in links {
@@ -7651,7 +7753,7 @@ impl EncryptedNoteApp {
             icons::icon(ui, Icon::Search, 14.0, theme::ACCENT);
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.find_query)
-                    .hint_text("Find in note")
+                    .hint_text(crate::tr!("Find in note"))
                     .desired_width(180.0)
                     .id(egui::Id::new("find_query")),
             );
@@ -7699,7 +7801,7 @@ impl EncryptedNoteApp {
                         .small()
                         .color(if cs { theme::ACCENT } else { theme::TEXT }),
                 )
-                .on_hover_text("Match case")
+                .on_hover_text(crate::tr!("Match case"))
                 .clicked()
             {
                 self.find_case = !cs;
@@ -7718,17 +7820,26 @@ impl EncryptedNoteApp {
             ui.separator();
             ui.add(
                 egui::TextEdit::singleline(&mut self.find_replace)
-                    .hint_text("Replace with")
+                    .hint_text(crate::tr!("Replace with"))
                     .desired_width(160.0),
             );
-            if ui.button("Replace").clicked() {
+            if ui.button(crate::tr!("Replace")).clicked() {
                 self.replace_current();
             }
-            if ui.button("Replace all").clicked() {
+            if ui.button(crate::tr!("Replace all")).clicked() {
                 self.replace_all();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::Close, 13.0, true, false, "Close find bar").clicked() {
+                if icons::button(
+                    ui,
+                    Icon::Close,
+                    13.0,
+                    true,
+                    false,
+                    crate::tr!("Close find bar"),
+                )
+                .clicked()
+                {
                     self.find_open = false;
                 }
             });
@@ -7769,8 +7880,10 @@ impl EncryptedNoteApp {
                 ui.add_space(20.0);
                 ui.vertical_centered(|ui| {
                     icons::icon(ui, Icon::File, 26.0, ui.visuals().weak_text_color());
-                    ui.label(RichText::new("Select a note from the sidebar").weak());
-                    if icons::button(ui, Icon::Add, 22.0, true, false, "New note").clicked() {
+                    ui.label(RichText::new(crate::tr!("Select a note from the sidebar")).weak());
+                    if icons::button(ui, Icon::Add, 22.0, true, false, crate::tr!("New note"))
+                        .clicked()
+                    {
                         self.new_note_open = true;
                         self.new_note_error = None;
                         self.new_note_name.clear();
@@ -7787,8 +7900,17 @@ impl EncryptedNoteApp {
 
             // Attachment toolbar — above the editor, below the tabs.
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Attach:").small().weak());
-                if icons::button(ui, Icon::Image, 16.0, true, false, "Attach an image").clicked() {
+                ui.label(RichText::new(crate::tr!("Attach:")).small().weak());
+                if icons::button(
+                    ui,
+                    Icon::Image,
+                    16.0,
+                    true,
+                    false,
+                    crate::tr!("Attach an image"),
+                )
+                .clicked()
+                {
                     self.open_attach_picker(AttachKind::Image);
                 }
                 if icons::button(
@@ -7803,13 +7925,24 @@ impl EncryptedNoteApp {
                 {
                     self.open_attach_picker(AttachKind::Audio);
                 }
-                if icons::button(ui, Icon::Video, 16.0, true, false, "Attach a video").clicked() {
+                if icons::button(
+                    ui,
+                    Icon::Video,
+                    16.0,
+                    true,
+                    false,
+                    crate::tr!("Attach a video"),
+                )
+                .clicked()
+                {
                     self.open_attach_picker(AttachKind::Video);
                 }
                 ui.label(
-                    RichText::new("images, voice notes, videos — shown & played in the preview")
-                        .small()
-                        .weak(),
+                    RichText::new(crate::tr!(
+                        "images, voice notes, videos — shown & played in the preview"
+                    ))
+                    .small()
+                    .weak(),
                 );
             });
 
@@ -7901,7 +8034,7 @@ impl EncryptedNoteApp {
                     if ui.input(|inp| inp.modifiers.command) {
                         self.secondary = Some(i);
                         self.secondary_live_line = 0;
-                        self.status = "Loaded into second pane".into();
+                        self.status = crate::tr!("Loaded into second pane").into();
                     } else {
                         select = Some(i);
                     }
@@ -7926,7 +8059,7 @@ impl EncryptedNoteApp {
     fn graph_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             icons::icon(ui, Icon::Graph, 16.0, theme::ACCENT);
-            ui.label(RichText::new("Graph").strong());
+            ui.label(RichText::new(crate::tr!("Graph")).strong());
             ui.separator();
             if icons::button(
                 ui,
@@ -7941,11 +8074,13 @@ impl EncryptedNoteApp {
                 self.graph_local = !self.graph_local;
             }
             if self.graph_local {
-                if icons::button(ui, Icon::Close, 12.0, true, false, "Shallower").clicked() {
+                if icons::button(ui, Icon::Close, 12.0, true, false, crate::tr!("Shallower"))
+                    .clicked()
+                {
                     self.graph_depth = self.graph_depth.saturating_sub(1).max(1);
                 }
                 ui.label(RichText::new(format!("depth {}", self.graph_depth)).small());
-                if icons::button(ui, Icon::Add, 12.0, true, false, "Deeper").clicked() {
+                if icons::button(ui, Icon::Add, 12.0, true, false, crate::tr!("Deeper")).clicked() {
                     self.graph_depth = (self.graph_depth + 1).min(6);
                 }
             }
@@ -7963,11 +8098,15 @@ impl EncryptedNoteApp {
             }
             ui.add(
                 egui::TextEdit::singleline(&mut self.graph_tag)
-                    .hint_text("tag filter")
+                    .hint_text(crate::tr!("tag filter"))
                     .desired_width(120.0),
             );
-            ui.menu_button("Colors", |ui| {
-                ui.label(RichText::new("Colour notes by tag").small().strong());
+            ui.menu_button(crate::tr!("Colors"), |ui| {
+                ui.label(
+                    RichText::new(crate::tr!("Colour notes by tag"))
+                        .small()
+                        .strong(),
+                );
                 let groups = self.config.graph_color_groups.clone();
                 for (i, (tag, idx)) in groups.iter().enumerate() {
                     ui.horizontal(|ui| {
@@ -8001,7 +8140,7 @@ impl EncryptedNoteApp {
                             self.graph_group_color = i;
                         }
                     }
-                    if ui.button("Add").clicked() {
+                    if ui.button(crate::tr!("Add")).clicked() {
                         let tag = self
                             .graph_group_tag
                             .trim()
@@ -8017,32 +8156,50 @@ impl EncryptedNoteApp {
                     }
                 });
             });
-            ui.menu_button("Force", |ui| {
+            ui.menu_button(crate::tr!("Force"), |ui| {
                 let mut changed = false;
-                ui.label(RichText::new("Repulsion").small());
+                ui.label(RichText::new(crate::tr!("Repulsion")).small());
                 changed |= ui
                     .add(
                         egui::Slider::new(&mut self.config.graph_repulsion, 0.1..=3.0)
                             .show_value(true),
                     )
                     .changed();
-                ui.label(RichText::new("Attraction").small());
+                ui.label(RichText::new(crate::tr!("Attraction")).small());
                 changed |= ui
                     .add(
                         egui::Slider::new(&mut self.config.graph_attraction, 0.1..=3.0)
                             .show_value(true),
                     )
                     .changed();
-                if ui.button("Recompute layout").clicked() || changed {
+                if ui.button(crate::tr!("Recompute layout")).clicked() || changed {
                     self.rebuild_graph();
                     self.config.save();
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::Close, 16.0, true, false, "Close graph").clicked() {
+                if icons::button(
+                    ui,
+                    Icon::Close,
+                    16.0,
+                    true,
+                    false,
+                    crate::tr!("Close graph"),
+                )
+                .clicked()
+                {
                     self.show_graph = false;
                 }
-                if icons::button(ui, Icon::Refresh, 14.0, true, false, "Reset view").clicked() {
+                if icons::button(
+                    ui,
+                    Icon::Refresh,
+                    14.0,
+                    true,
+                    false,
+                    crate::tr!("Reset view"),
+                )
+                .clicked()
+                {
                     self.graph_zoom = 1.0;
                     self.graph_pan = egui::Vec2::ZERO;
                 }
@@ -8051,7 +8208,7 @@ impl EncryptedNoteApp {
         ui.separator();
         if self.graph_nodes.is_empty() {
             ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.weak("No notes to graph"));
+            ui.vertical_centered(|ui| ui.weak(crate::tr!("No notes to graph")));
             return;
         }
         let rect = ui.available_rect_before_wrap();
@@ -8982,16 +9139,29 @@ impl EncryptedNoteApp {
                     .fit_to_exact_size(egui::vec2(104.0, 104.0)),
             );
             ui.add_space(6.0);
-            ui.label(RichText::new("Encrypted Note").size(34.0).strong());
-            ui.label(RichText::new("AES-256 encrypted markdown vault").weak());
+            ui.label(
+                RichText::new(crate::tr!("Encrypted Note"))
+                    .size(34.0)
+                    .strong(),
+            );
+            ui.label(RichText::new(crate::tr!("AES-256 encrypted markdown vault")).weak());
             ui.add_space(20.0);
-            if icons::button(ui, Icon::FolderOpen, 30.0, true, false, "Open a vault").clicked() {
+            if icons::button(
+                ui,
+                Icon::FolderOpen,
+                30.0,
+                true,
+                false,
+                crate::tr!("Open a vault"),
+            )
+            .clicked()
+            {
                 self.open_picker();
             }
-            ui.label(RichText::new("Open a vault").weak().small());
+            ui.label(RichText::new(crate::tr!("Open a vault")).weak().small());
             if !self.config.recent_vaults.is_empty() {
                 ui.add_space(14.0);
-                ui.label(RichText::new("Recent vaults").strong());
+                ui.label(RichText::new(crate::tr!("Recent vaults")).strong());
                 let recents = self.config.recent_vaults.clone();
                 for path in recents {
                     let clicked = ui
@@ -9024,20 +9194,20 @@ impl EncryptedNoteApp {
         let mut open = true;
         let mut edit: Option<(String, String, bool)> = None;
         let mut del: Option<String> = None;
-        egui::Window::new("Properties")
+        egui::Window::new(crate::tr!("Properties"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .default_width(420.0)
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new("YAML frontmatter properties for this note")
+                    RichText::new(crate::tr!("YAML frontmatter properties for this note"))
                         .small()
                         .weak(),
                 );
                 ui.separator();
                 if props.is_empty() {
-                    ui.weak("No properties yet — add one below.");
+                    ui.weak(crate::tr!("No properties yet — add one below."));
                 }
                 egui::ScrollArea::vertical()
                     .max_height(260.0)
@@ -9090,7 +9260,11 @@ impl EncryptedNoteApp {
                         }
                     });
                 ui.separator();
-                ui.label(RichText::new("Add / update a property").small().strong());
+                ui.label(
+                    RichText::new(crate::tr!("Add / update a property"))
+                        .small()
+                        .strong(),
+                );
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.prop_key)
@@ -9102,16 +9276,16 @@ impl EncryptedNoteApp {
                             .hint_text("value")
                             .desired_width(170.0),
                     );
-                    ui.checkbox(&mut self.prop_is_list, "List (comma-separated)");
+                    ui.checkbox(&mut self.prop_is_list, crate::tr!("List (comma-separated)"));
                 });
                 if let Some(err) = &self.prop_error {
                     ui.label(RichText::new(err).color(theme::DANGER).small());
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Save property").clicked() {
+                    if ui.button(crate::tr!("Save property")).clicked() {
                         self.commit_property();
                     }
-                    if self.prop_original.is_some() && ui.button("Delete").clicked() {
+                    if self.prop_original.is_some() && ui.button(crate::tr!("Delete")).clicked() {
                         del = self.prop_original.clone();
                     }
                 });
@@ -9135,7 +9309,7 @@ impl EncryptedNoteApp {
         }
         let tags = self.index.all_tags();
         let mut open = true;
-        egui::Window::new("Manage tags")
+        egui::Window::new(crate::tr!("Manage tags"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -9154,7 +9328,7 @@ impl EncryptedNoteApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         if tags.is_empty() {
-                            ui.weak("No tags in this vault");
+                            ui.weak(crate::tr!("No tags in this vault"));
                         }
                         for (tag, count) in &tags {
                             ui.horizontal(|ui| {
@@ -9176,7 +9350,7 @@ impl EncryptedNoteApp {
                     });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("Rename");
+                    ui.label(crate::tr!("Rename"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.tag_rename_from)
                             .hint_text("old tag")
@@ -9190,12 +9364,12 @@ impl EncryptedNoteApp {
                     );
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Rename tag").clicked() {
+                    if ui.button(crate::tr!("Rename tag")).clicked() {
                         self.apply_tag_rename(false);
                     }
                     if ui
                         .add(egui::Button::new(
-                            RichText::new("Delete tag").color(theme::DANGER),
+                            RichText::new(crate::tr!("Delete tag")).color(theme::DANGER),
                         ))
                         .clicked()
                     {
@@ -9214,7 +9388,7 @@ impl EncryptedNoteApp {
             return;
         }
         let mut open = true;
-        egui::Window::new("Column edit")
+        egui::Window::new(crate::tr!("Column edit"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -9229,33 +9403,33 @@ impl EncryptedNoteApp {
                 );
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("From line");
+                    ui.label(crate::tr!("From line"));
                     ui.add(egui::DragValue::new(&mut self.column_start).clamp_range(1..=1_000_000));
-                    ui.label("to");
+                    ui.label(crate::tr!("to"));
                     ui.add(egui::DragValue::new(&mut self.column_end).clamp_range(1..=1_000_000));
                 });
                 ui.horizontal(|ui| {
-                    ui.radio_value(&mut self.column_mode, 0, "At column");
+                    ui.radio_value(&mut self.column_mode, 0, crate::tr!("At column"));
                     ui.add(
                         egui::DragValue::new(&mut self.column_index)
                             .clamp_range(0..=100_000)
                             .prefix("col "),
                     );
-                    ui.radio_value(&mut self.column_mode, 1, "At end of line");
+                    ui.radio_value(&mut self.column_mode, 1, crate::tr!("At end of line"));
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Text");
+                    ui.label(crate::tr!("Text"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.column_text)
                             .desired_width(220.0)
-                            .hint_text("text to insert"),
+                            .hint_text(crate::tr!("text to insert")),
                     );
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Apply").clicked() {
+                    if ui.button(crate::tr!("Apply")).clicked() {
                         self.apply_column_edit();
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::tr!("Cancel")).clicked() {
                         self.column_edit_open = false;
                     }
                 });
@@ -9277,14 +9451,14 @@ impl EncryptedNoteApp {
         let mut del_row: Option<usize> = None;
         let mut del_col: Option<usize> = None;
         let mut save = false;
-        egui::Window::new("Edit table")
+        egui::Window::new(crate::tr!("Edit table"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
             .default_width(620.0)
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new("First row is the header. Edit cells directly.")
+                    RichText::new(crate::tr!("First row is the header. Edit cells directly."))
                         .small()
                         .weak(),
                 );
@@ -9320,15 +9494,15 @@ impl EncryptedNoteApp {
                 self.table_rows = rows;
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("+ Row").clicked() {
+                    if ui.button(crate::tr!("+ Row")).clicked() {
                         add_row = true;
                     }
-                    if ui.button("+ Column").clicked() {
+                    if ui.button(crate::tr!("+ Column")).clicked() {
                         add_col = true;
                     }
                     ui.separator();
                     let rows_len = self.table_rows.len();
-                    ui.label("Delete row:");
+                    ui.label(crate::tr!("Delete row:"));
                     for r in 0..rows_len.min(20) {
                         if ui.small_button(format!("{}", r + 1)).clicked() {
                             del_row = Some(r);
@@ -9337,7 +9511,7 @@ impl EncryptedNoteApp {
                 });
                 ui.horizontal(|ui| {
                     let cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(1);
-                    ui.label("Delete column:");
+                    ui.label(crate::tr!("Delete column:"));
                     for c in 0..cols.min(20) {
                         if ui.small_button(format!("{}", c + 1)).clicked() {
                             del_col = Some(c);
@@ -9345,10 +9519,10 @@ impl EncryptedNoteApp {
                     }
                 });
                 ui.horizontal(|ui| {
-                    if ui.button("Save table").clicked() {
+                    if ui.button(crate::tr!("Save table")).clicked() {
                         save = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::tr!("Cancel")).clicked() {
                         self.table_edit_open = false;
                     }
                 });
@@ -9389,7 +9563,7 @@ impl EncryptedNoteApp {
         }
         let mut open = true;
         let mut font_changed = false;
-        egui::Window::new("Settings")
+        egui::Window::new(crate::tr!("Settings"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -9399,9 +9573,9 @@ impl EncryptedNoteApp {
                     .max_height(520.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Editor").strong());
+                        ui.label(RichText::new(crate::tr!("Editor")).strong());
                         ui.horizontal(|ui| {
-                            ui.label("Font size");
+                            ui.label(crate::tr!("Font size"));
                             font_changed = ui
                                 .add(egui::Slider::new(&mut self.config.font_size, 10.0..=24.0))
                                 .changed();
@@ -9410,24 +9584,39 @@ impl EncryptedNoteApp {
                             &mut self.config.wysiwyg,
                             "Conceal markdown while editing (WYSIWYG)",
                         );
-                        ui.checkbox(&mut self.config.spellcheck, "Spell check");
-                        ui.checkbox(&mut self.config.vim, "Vim mode");
+                        ui.checkbox(&mut self.config.spellcheck, crate::tr!("Spell check"));
+                        ui.checkbox(&mut self.config.vim, crate::tr!("Vim mode"));
                         ui.checkbox(
                             &mut self.config.show_preview,
                             "Open notes in split view by default",
                         );
-                        ui.checkbox(&mut self.config.linked_pane, "Linked second pane");
+                        ui.checkbox(
+                            &mut self.config.linked_pane,
+                            crate::tr!("Linked second pane"),
+                        );
                         ui.separator();
-                        ui.label(RichText::new("Daily notes").strong());
+                        ui.label(RichText::new(crate::tr!("Language")).strong());
                         ui.horizontal(|ui| {
-                            ui.label("Folder");
+                            for lang in crate::i18n::Lang::ALL {
+                                let sel = crate::i18n::current() == lang;
+                                if ui.selectable_label(sel, lang.label()).clicked() {
+                                    crate::i18n::set(lang);
+                                    self.config.language = lang.code().to_string();
+                                    self.config.save();
+                                }
+                            }
+                        });
+                        ui.separator();
+                        ui.label(RichText::new(crate::tr!("Daily notes")).strong());
+                        ui.horizontal(|ui| {
+                            ui.label(crate::tr!("Folder"));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.config.daily_dir)
                                     .desired_width(160.0),
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Date format");
+                            ui.label(crate::tr!("Date format"));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.config.daily_format)
                                     .desired_width(160.0)
@@ -9435,7 +9624,7 @@ impl EncryptedNoteApp {
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Template");
+                            ui.label(crate::tr!("Template"));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.config.daily_template)
                                     .desired_width(160.0)
@@ -9445,14 +9634,14 @@ impl EncryptedNoteApp {
                         ui.separator();
                         ui.label(RichText::new("Templates & window").strong());
                         ui.horizontal(|ui| {
-                            ui.label("Templates folder");
+                            ui.label(crate::tr!("Templates folder"));
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.config.templates_dir)
                                     .desired_width(160.0),
                             );
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Startup window");
+                            ui.label(crate::tr!("Startup window"));
                             for mode in [
                                 WindowMode::Windowed,
                                 WindowMode::Maximized,
@@ -9479,12 +9668,12 @@ impl EncryptedNoteApp {
                         );
                     });
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
+                    if ui.button(crate::tr!("Save")).clicked() {
                         self.config.window_mode = self.window_mode.as_str().to_string();
                         self.config.save();
-                        self.status = "Settings saved".into();
+                        self.status = crate::tr!("Settings saved").into();
                     }
-                    if ui.button("Close").clicked() {
+                    if ui.button(crate::tr!("Close")).clicked() {
                         self.settings_open = false;
                     }
                 });
@@ -9508,16 +9697,20 @@ impl EncryptedNoteApp {
             .get(self.active)
             .map(|t| t.title.clone())
             .unwrap_or_default();
-        egui::Window::new("Note composer")
+        egui::Window::new(crate::tr!("Note composer"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_width(400.0)
             .show(ctx, |ui| {
-                ui.label(RichText::new(format!("Active note: {title}")).small().weak());
+                ui.label(
+                    RichText::new(crate::tr!("Active note: {}", title))
+                        .small()
+                        .weak(),
+                );
                 ui.separator();
-                ui.radio_value(&mut self.composer_mode, 0, "Merge into another note");
-                ui.radio_value(&mut self.composer_mode, 1, "Split below the caret");
+                ui.radio_value(&mut self.composer_mode, 0, crate::tr!("Merge into another note"));
+                ui.radio_value(&mut self.composer_mode, 1, crate::tr!("Split below the caret"));
                 ui.add_space(4.0);
                 ui.add(
                     egui::TextEdit::singleline(&mut self.composer_target)
@@ -9542,10 +9735,10 @@ impl EncryptedNoteApp {
                     .weak(),
                 );
                 ui.horizontal(|ui| {
-                    if ui.button("Apply").clicked() {
+                    if ui.button(crate::tr!("Apply")).clicked() {
                         self.apply_composer(ctx);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(crate::tr!("Cancel")).clicked() {
                         self.composer_open = false;
                     }
                 });
@@ -9570,7 +9763,7 @@ impl EncryptedNoteApp {
             let mut close = false;
             {
                 let picker = self.picker.as_mut().unwrap();
-                egui::Window::new("Open vault")
+                egui::Window::new(crate::tr!("Open vault"))
                     .title_bar(false)
                     .collapsible(false)
                     .resizable(true)
@@ -9600,8 +9793,15 @@ impl EncryptedNoteApp {
                                     .hint_text("/home/user/Notes")
                                     .desired_width(300.0),
                             );
-                            if icons::button(ui, Icon::Check, 18.0, true, false, "Go to path")
-                                .clicked()
+                            if icons::button(
+                                ui,
+                                Icon::Check,
+                                18.0,
+                                true,
+                                false,
+                                crate::tr!("Go to path"),
+                            )
+                            .clicked()
                             {
                                 let p = PathBuf::from(picker.manual.trim());
                                 if p.is_dir() {
@@ -9656,7 +9856,15 @@ impl EncryptedNoteApp {
                                 chosen = Some(picker.current.clone());
                                 close = true;
                             }
-                            if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked()
+                            if icons::button(
+                                ui,
+                                Icon::Close,
+                                20.0,
+                                true,
+                                false,
+                                crate::tr!("Cancel"),
+                            )
+                            .clicked()
                             {
                                 close = true;
                             }
@@ -9674,16 +9882,17 @@ impl EncryptedNoteApp {
         // New note dialog.
         if self.new_note_open {
             let mut open = self.new_note_open;
-            egui::Window::new("New note")
+            egui::Window::new(crate::tr!("New note"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label(RichText::new("New note").strong());
+                    ui.label(RichText::new(crate::tr!("New note")).strong());
                     ui.add_space(4.0);
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.new_note_name).hint_text("Note name"),
+                        egui::TextEdit::singleline(&mut self.new_note_name)
+                            .hint_text(crate::tr!("Note name")),
                     );
                     if resp.changed() {
                         self.new_note_error = None;
@@ -9694,8 +9903,15 @@ impl EncryptedNoteApp {
                     }
                     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.horizontal(|ui| {
-                        if icons::button(ui, Icon::Check, 20.0, true, false, "Create note")
-                            .clicked()
+                        if icons::button(
+                            ui,
+                            Icon::Check,
+                            20.0,
+                            true,
+                            false,
+                            crate::tr!("Create note"),
+                        )
+                        .clicked()
                             || enter
                         {
                             let name = self.new_note_name.clone();
@@ -9708,7 +9924,9 @@ impl EncryptedNoteApp {
                                 );
                             }
                         }
-                        if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             self.new_note_open = false;
                             self.new_note_error = None;
                         }
@@ -9721,29 +9939,38 @@ impl EncryptedNoteApp {
         // New canvas dialog.
         if self.new_canvas_open {
             let mut open = self.new_canvas_open;
-            egui::Window::new("New canvas")
+            egui::Window::new(crate::tr!("New canvas"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label(RichText::new("New canvas").strong());
+                    ui.label(RichText::new(crate::tr!("New canvas")).strong());
                     ui.add_space(4.0);
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.new_canvas_name)
-                            .hint_text("Canvas name"),
+                            .hint_text(crate::tr!("Canvas name")),
                     );
                     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.horizontal(|ui| {
-                        if icons::button(ui, Icon::Check, 20.0, true, false, "Create canvas")
-                            .clicked()
+                        if icons::button(
+                            ui,
+                            Icon::Check,
+                            20.0,
+                            true,
+                            false,
+                            crate::tr!("Create canvas"),
+                        )
+                        .clicked()
                             || enter
                         {
                             let name = self.new_canvas_name.clone();
                             self.create_canvas(&name);
                             self.new_canvas_open = false;
                         }
-                        if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             self.new_canvas_open = false;
                         }
                     });
@@ -9782,8 +10009,15 @@ impl EncryptedNoteApp {
                 }
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.horizontal(|ui| {
-                    if icons::button(ui, Icon::Check, 20.0, true, false, "Create sub-note")
-                        .clicked()
+                    if icons::button(
+                        ui,
+                        Icon::Check,
+                        20.0,
+                        true,
+                        false,
+                        crate::tr!("Create sub-note"),
+                    )
+                    .clicked()
                         || enter
                     {
                         let name = self.subnote_name.clone();
@@ -9800,7 +10034,9 @@ impl EncryptedNoteApp {
                                 Some("You can't create an untitled note — enter a name.".into());
                         }
                     }
-                    if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         self.subnote_open = false;
                         self.subnote_error = None;
                     }
@@ -9815,7 +10051,7 @@ impl EncryptedNoteApp {
             let mut open = true;
             let mut submit = false;
             let mut cancel = false;
-            let mut win = egui::Window::new("Rename note")
+            let mut win = egui::Window::new(crate::tr!("Rename note"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false);
@@ -9823,17 +10059,20 @@ impl EncryptedNoteApp {
                 win = win.fixed_pos(pos);
             }
             win.open(&mut open).show(ctx, |ui| {
-                ui.label(RichText::new("Rename note").strong());
+                ui.label(RichText::new(crate::tr!("Rename note")).strong());
                 ui.add_space(4.0);
                 let resp = ui.text_edit_singleline(&mut self.rename_name);
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.horizontal(|ui| {
-                    if icons::button(ui, Icon::Check, 20.0, true, false, "Rename").clicked()
+                    if icons::button(ui, Icon::Check, 20.0, true, false, crate::tr!("Rename"))
+                        .clicked()
                         || enter
                     {
                         submit = true;
                     }
-                    if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         cancel = true;
                     }
                 });
@@ -9859,7 +10098,7 @@ impl EncryptedNoteApp {
                 .unwrap_or_default();
             let mut open = true;
             let mut confirm = false;
-            let mut win = egui::Window::new("Delete note")
+            let mut win = egui::Window::new(crate::tr!("Delete note"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false);
@@ -9869,10 +10108,14 @@ impl EncryptedNoteApp {
             win.open(&mut open).show(ctx, |ui| {
                 ui.label(format!("Permanently delete '{name}'?"));
                 ui.horizontal(|ui| {
-                    if icons::danger_button(ui, Icon::Trash, 20.0, true, "Delete").clicked() {
+                    if icons::danger_button(ui, Icon::Trash, 20.0, true, crate::tr!("Delete"))
+                        .clicked()
+                    {
                         confirm = true;
                     }
-                    if icons::button(ui, Icon::Close, 20.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         self.confirm_delete = None;
                     }
                 });
@@ -9890,7 +10133,7 @@ impl EncryptedNoteApp {
         if let Some(templates) = self.template_pick.clone() {
             let mut open = true;
             let mut pick: Option<PathBuf> = None;
-            egui::Window::new("New note from template")
+            egui::Window::new(crate::tr!("New note from template"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(true)
@@ -9958,7 +10201,9 @@ impl EncryptedNoteApp {
                         }
                     }
                     ui.add_space(6.0);
-                    if icons::button(ui, Icon::Close, 18.0, true, false, "Cancel").clicked() {
+                    if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
+                        .clicked()
+                    {
                         self.canvas_pick = None;
                     }
                 });
@@ -9982,7 +10227,7 @@ impl EncryptedNoteApp {
             let mut close = false;
             {
                 let picker = self.attach_picker.as_mut().unwrap();
-                egui::Window::new("Attach file")
+                egui::Window::new(crate::tr!("Attach file"))
                     .title_bar(false)
                     .collapsible(false)
                     .resizable(true)
@@ -10068,7 +10313,9 @@ impl EncryptedNoteApp {
                                 }
                             });
                         ui.add_space(6.0);
-                        if icons::button(ui, Icon::Close, 18.0, true, false, "Cancel").clicked() {
+                        if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
+                            .clicked()
+                        {
                             close = true;
                         }
                     });
@@ -10086,7 +10333,7 @@ impl EncryptedNoteApp {
                         );
                         view.sel.clear();
                         view.sel.insert(id);
-                        self.status = format!("Added PDF card · {}", p.display());
+                        self.status = crate::tr!("Added PDF card · {}", p.display());
                     }
                 } else {
                     self.attach_file(&p);
@@ -10101,21 +10348,21 @@ impl EncryptedNoteApp {
         // Daily notes settings.
         if self.daily_settings_open {
             let mut open = true;
-            egui::Window::new("Daily notes")
+            egui::Window::new(crate::tr!("Daily notes"))
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(true)
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.set_width(420.0);
-                    ui.label(RichText::new("Folder").strong());
+                    ui.label(RichText::new(crate::tr!("Folder")).strong());
                     ui.add(
                         egui::TextEdit::singleline(&mut self.config.daily_dir)
                             .hint_text("Daily")
                             .desired_width(f32::INFINITY),
                     );
                     ui.add_space(6.0);
-                    ui.label(RichText::new("Date format").strong());
+                    ui.label(RichText::new(crate::tr!("Date format")).strong());
                     ui.add(
                         egui::TextEdit::singleline(&mut self.config.daily_format)
                             .hint_text("YYYY-MM-DD")
@@ -10250,8 +10497,8 @@ impl EncryptedNoteApp {
                         let vault = self
                             .vault
                             .as_ref()
-                            .map(|v| format!("{} note(s)", v.notes.len()))
-                            .unwrap_or_else(|| "no vault".into());
+                            .map(|v| crate::tr!("{} note(s)", v.notes.len()))
+                            .unwrap_or_else(|| crate::tr!("no vault").to_string());
                         ui.weak(vault);
                     } else {
                         ui.weak(self.status.clone());
@@ -10285,14 +10532,22 @@ impl eframe::App for EncryptedNoteApp {
         // actually changes. Sending it every frame spams the compositor with
         // reconfigure requests, which can make a fullscreen window unresponsive.
         let desired_title = if self.show_password_warning {
-            "Encrypted Note — Save your password".to_string()
+            format!(
+                "{} — {}",
+                crate::tr!("Encrypted Note"),
+                crate::tr!("Save your password")
+            )
         } else if !matches!(self.gate, Gate::Open) {
-            "Encrypted Note — Locked".to_string()
+            format!(
+                "{} — {}",
+                crate::tr!("Encrypted Note"),
+                crate::tr!("Locked")
+            )
         } else if let Some(tab) = self.tabs.get(self.active) {
             let mark = if tab.dirty() { "● " } else { "" };
-            format!("{mark}{} — Encrypted Note", tab.title)
+            format!("{mark}{} — {}", tab.title, crate::tr!("Encrypted Note"))
         } else {
-            "Encrypted Note".to_string()
+            crate::tr!("Encrypted Note").to_string()
         };
         if desired_title != self.window_title {
             self.window_title = desired_title.clone();
@@ -10549,15 +10804,21 @@ fn show_tree(
             }
             if hovered {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Trash, 13.0, true, false, "Delete").clicked() {
+                    if icons::button(ui, Icon::Trash, 13.0, true, false, crate::tr!("Delete"))
+                        .clicked()
+                    {
                         actions.delete = Some(file.path.clone());
                         actions.pos = Some(egui::pos2(row.max.x + 6.0, row.min.y));
                     }
-                    if icons::button(ui, Icon::Edit, 13.0, true, false, "Rename").clicked() {
+                    if icons::button(ui, Icon::Edit, 13.0, true, false, crate::tr!("Rename"))
+                        .clicked()
+                    {
                         actions.rename = Some(file.path.clone());
                         actions.pos = Some(egui::pos2(row.max.x + 6.0, row.min.y));
                     }
-                    if icons::button(ui, Icon::Add, 13.0, true, false, "New sub-note").clicked() {
+                    if icons::button(ui, Icon::Add, 13.0, true, false, crate::tr!("New sub-note"))
+                        .clicked()
+                    {
                         actions.subnote = Some(file.path.clone());
                         actions.pos = Some(egui::pos2(row.max.x + 6.0, row.min.y));
                     }
@@ -10575,24 +10836,27 @@ fn policy_checklist(ui: &mut egui::Ui, password: &str) {
     let checks = [
         (
             password.chars().count() >= crate::crypto::MIN_PASSWORD_LEN,
-            "At least 16 characters",
+            crate::tr!("At least 16 characters"),
         ),
-        (password.chars().any(|c| c.is_ascii_digit()), "A number"),
+        (
+            password.chars().any(|c| c.is_ascii_digit()),
+            crate::tr!("A number"),
+        ),
         (
             password.chars().any(|c| c.is_uppercase()),
-            "A capital letter",
+            crate::tr!("A capital letter"),
         ),
         (
             password.chars().any(|c| c.is_lowercase()),
-            "A lower-case letter",
+            crate::tr!("A lower-case letter"),
         ),
         (
             password.chars().any(|c| !c.is_alphanumeric()),
-            "A special character",
+            crate::tr!("A special character"),
         ),
         (
             !crypto::has_letter_run(password, 4),
-            "No words (max 3 letters in a row)",
+            crate::tr!("No words (max 3 letters in a row)"),
         ),
     ];
     for (ok, label) in checks {
@@ -11353,7 +11617,16 @@ fn pw_copy_row(ui: &mut egui::Ui, label: &str, value: &str) -> bool {
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).small().weak());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(ui, Icon::Copy, 15.0, !value.is_empty(), false, "Copy").clicked() {
+            if icons::button(
+                ui,
+                Icon::Copy,
+                15.0,
+                !value.is_empty(),
+                false,
+                crate::tr!("Copy"),
+            )
+            .clicked()
+            {
                 copy = true;
             }
         });

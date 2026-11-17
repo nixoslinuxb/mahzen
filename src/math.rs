@@ -309,8 +309,24 @@ enum Ast {
     Script(Box<Ast>, Option<Box<Ast>>, Option<Box<Ast>>),
     BigOp(String, Option<Box<Ast>>, Option<Box<Ast>>),
     Delim(String, Box<Ast>, String),
-    Matrix(Vec<Vec<Ast>>, MatrixKind),
+    Matrix(Vec<Vec<Ast>>, MatrixKind, Vec<HAlign>),
     Accent(Box<Ast>, char),
+    /// A coloured sub-expression (`\textcolor{red}{…}`, `\color{red} …`).
+    Color(egui::Color32, Box<Ast>),
+    /// A strike-through decoration (`\cancel`, `\bcancel`, `\xcancel`).
+    Cancel(Box<Ast>, bool, bool),
+    /// A horizontal line-only strike (`\sout`).
+    Strike(Box<Ast>),
+    /// A filled frame around the expression (`\boxed`).
+    Boxed(Box<Ast>),
+}
+
+/// Horizontal alignment of an `array` column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HAlign {
+    Left,
+    Center,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -448,6 +464,25 @@ impl<'a> Parser<'a> {
                 _ => {}
             }
             let atom = self.parse_atom();
+            // `\color{red}` colours everything that follows in this group.
+            if let Ast::Color(c, inner) = &atom {
+                if matches!(**inner, Ast::Row(ref v) if v.is_empty()) {
+                    let mut rest = Vec::new();
+                    loop {
+                        match self.peek() {
+                            None => break,
+                            Some(Tok::R) if stop == Stop::Brace => break,
+                            Some(Tok::Cmd(c)) if stop == Stop::Right && c == "right" => break,
+                            Some(Tok::R) | Some(Tok::Amp) | Some(Tok::NewRow) => break,
+                            _ => {}
+                        }
+                        let a = self.parse_atom();
+                        rest.push(self.attach_scripts(a));
+                    }
+                    items.push(Ast::Color(*c, Box::new(Ast::Row(rest))));
+                    break;
+                }
+            }
             let atom = self.attach_scripts(atom);
             items.push(atom);
         }
@@ -559,7 +594,7 @@ impl<'a> Parser<'a> {
         body
     }
 
-    fn parse_matrix(&mut self, kind: MatrixKind) -> Ast {
+    fn parse_matrix(&mut self, kind: MatrixKind, aligns: Vec<HAlign>) -> Ast {
         let body = self.read_env_body();
         let mut rows: Vec<Vec<Ast>> = Vec::new();
         let mut cells: Vec<Ast> = Vec::new();
@@ -583,7 +618,34 @@ impl<'a> Parser<'a> {
             flush_cell(&mut chunk, &mut cells);
             rows.push(cells);
         }
-        Ast::Matrix(rows, kind)
+        Ast::Matrix(rows, kind, aligns)
+    }
+
+    /// Read a `{name}` colour argument (also accepts a bare `red`).
+    fn color_arg(&mut self) -> String {
+        if matches!(self.peek(), Some(Tok::L)) {
+            let inner = self.parse_group();
+            if let Ast::Text(s) = inner {
+                return s;
+            }
+            if let Ast::Row(items) = &inner {
+                let mut out = String::new();
+                for it in items {
+                    match it {
+                        Ast::Sym(s) | Ast::Text(s) => out.push_str(s),
+                        _ => {}
+                    }
+                }
+                return out;
+            }
+            String::new()
+        } else {
+            match self.eat() {
+                Some(Tok::Ch(c)) => c.to_string(),
+                Some(Tok::Cmd(c)) => c,
+                _ => String::new(),
+            }
+        }
     }
 
     fn parse_delim(&mut self) -> String {
@@ -648,6 +710,21 @@ impl<'a> Parser<'a> {
                 Ast::Text(s)
             }
             "mathbb" | "mathcal" | "mathbf" | "mathit" | "boldsymbol" => self.parse_group(),
+            "textcolor" | "colorbox" => {
+                let name = self.color_arg();
+                let body = self.parse_group();
+                Ast::Color(latex_color(&name), Box::new(body))
+            }
+            "color" => {
+                // Applies to the rest of the enclosing group.
+                let name = self.color_arg();
+                Ast::Color(latex_color(&name), Box::new(Ast::Row(Vec::new())))
+            }
+            "cancel" => Ast::Cancel(Box::new(self.parse_group()), false, false),
+            "bcancel" => Ast::Cancel(Box::new(self.parse_group()), true, false),
+            "xcancel" => Ast::Cancel(Box::new(self.parse_group()), true, true),
+            "sout" => Ast::Strike(Box::new(self.parse_group())),
+            "boxed" | "fbox" => Ast::Boxed(Box::new(self.parse_group())),
             "overline" | "bar" => Ast::Accent(Box::new(self.parse_group()), '-'),
             "hat" | "widehat" => Ast::Accent(Box::new(self.parse_group()), '^'),
             "vec" | "overrightarrow" => Ast::Accent(Box::new(self.parse_group()), '→'),
@@ -665,6 +742,24 @@ impl<'a> Parser<'a> {
             }
             "begin" => {
                 let env = self.read_env_name();
+                // `\begin{array}{lcr}` carries a column-alignment spec.
+                let mut aligns: Vec<HAlign> = Vec::new();
+                if env == "array" && matches!(self.peek(), Some(Tok::L)) {
+                    self.i += 1;
+                    while let Some(t) = self.peek().cloned() {
+                        match t {
+                            Tok::R => {
+                                self.i += 1;
+                                break;
+                            }
+                            Tok::Ch('l') => aligns.push(HAlign::Left),
+                            Tok::Ch('c') => aligns.push(HAlign::Center),
+                            Tok::Ch('r') => aligns.push(HAlign::Right),
+                            _ => {}
+                        }
+                        self.i += 1;
+                    }
+                }
                 let kind = match env.as_str() {
                     "pmatrix" => MatrixKind::Paren,
                     "bmatrix" => MatrixKind::Bracket,
@@ -672,11 +767,12 @@ impl<'a> Parser<'a> {
                     "vmatrix" => MatrixKind::Bar,
                     "aligned" | "align" | "align*" | "gather" | "gather*" | "split"
                     | "multline" | "multline*" => MatrixKind::Aligned,
-                    "equation" | "equation*" | "array" => MatrixKind::Plain,
+                    "equation" | "equation*" => MatrixKind::Plain,
+                    "array" => MatrixKind::Plain,
                     "cases" => MatrixKind::Cases,
                     _ => MatrixKind::Plain,
                 };
-                self.parse_matrix(kind)
+                self.parse_matrix(kind, aligns)
             }
             "sum" | "prod" | "coprod" => Ast::BigOp(symbol(name).unwrap_or("∑").into(), None, None),
             "int" | "iint" | "iiint" | "oint" => {
@@ -709,6 +805,28 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Map the common LaTeX/xcolor names to egui colours.
+fn latex_color(name: &str) -> egui::Color32 {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "red" => egui::Color32::from_rgb(0xe0, 0x5f, 0x5f),
+        "orange" => egui::Color32::from_rgb(0xe0, 0x8c, 0x4f),
+        "yellow" => egui::Color32::from_rgb(0xd8, 0xc0, 0x4f),
+        "green" => egui::Color32::from_rgb(0x7d, 0xdc, 0x8a),
+        "teal" | "cyan" => egui::Color32::from_rgb(0x5f, 0xc8, 0xc8),
+        "blue" => egui::Color32::from_rgb(0x6a, 0xa8, 0xf0),
+        "purple" | "violet" => egui::Color32::from_rgb(0xa8, 0x95, 0xff),
+        "magenta" | "pink" => egui::Color32::from_rgb(0xd0, 0x8f, 0xc0),
+        "brown" => egui::Color32::from_rgb(0xb0, 0x8a, 0x6a),
+        "gray" | "grey" => egui::Color32::from_rgb(0x9a, 0x9a, 0x9a),
+        "black" => egui::Color32::from_rgb(0x20, 0x20, 0x20),
+        "white" => egui::Color32::from_rgb(0xf0, 0xf0, 0xf0),
+        "darkblue" => egui::Color32::from_rgb(0x3a, 0x5a, 0xa8),
+        "darkred" => egui::Color32::from_rgb(0xa8, 0x3a, 0x3a),
+        "darkgreen" => egui::Color32::from_rgb(0x3a, 0x8a, 0x4a),
+        _ => crate::theme::TEXT,
+    }
+}
+
 fn parse_ast(src: &str) -> Ast {
     let toks = lex(src);
     let mut p = Parser { toks: &toks, i: 0 };
@@ -730,16 +848,36 @@ enum MItem {
         x: f32,
         dy: f32,
         ascent: f32,
+        /// Per-item colour override (`\textcolor{…}`); `None` = default.
+        color: Option<egui::Color32>,
     },
     Rule {
         x: f32,
         dy: f32,
         w: f32,
         thick: f32,
+        color: Option<egui::Color32>,
+    },
+    /// A decoration line drawn over a laid-out box (cancel / strike / frame).
+    Line {
+        p1: egui::Pos2,
+        p2: egui::Pos2,
+        thick: f32,
+        color: egui::Color32,
     },
 }
 
 fn glyph(ui: &egui::Ui, text: &str, size: f32, italic: bool) -> (MItem, f32, f32) {
+    glyph_colored(ui, text, size, italic, None)
+}
+
+fn glyph_colored(
+    ui: &egui::Ui,
+    text: &str,
+    size: f32,
+    italic: bool,
+    color: Option<egui::Color32>,
+) -> (MItem, f32, f32) {
     let mut job = egui::text::LayoutJob::default();
     job.append(
         text,
@@ -761,6 +899,7 @@ fn glyph(ui: &egui::Ui, text: &str, size: f32, italic: bool) -> (MItem, f32, f32
         x: 0.0,
         dy: 0.0,
         ascent: asc,
+        color,
     };
     (item, w, asc)
 }
@@ -774,6 +913,25 @@ fn empty() -> MathLayout {
     }
 }
 
+fn shift_item(item: &mut MItem, dx: f32, dy: f32) {
+    match item {
+        MItem::Glyph { x, dy: y, .. } => {
+            *x += dx;
+            *y += dy;
+        }
+        MItem::Rule { x, dy: y, .. } => {
+            *x += dx;
+            *y += dy;
+        }
+        MItem::Line { p1, p2, .. } => {
+            p1.x += dx;
+            p1.y += dy;
+            p2.x += dx;
+            p2.y += dy;
+        }
+    }
+}
+
 fn shift(l: &mut MathLayout, dx: f32, dy: f32) {
     for item in &mut l.items {
         match item {
@@ -784,6 +942,12 @@ fn shift(l: &mut MathLayout, dx: f32, dy: f32) {
             MItem::Rule { x, dy: y, .. } => {
                 *x += dx;
                 *y += dy;
+            }
+            MItem::Line { p1, p2, .. } => {
+                p1.x += dx;
+                p1.y += dy;
+                p2.x += dx;
+                p2.y += dy;
             }
         }
     }
@@ -849,6 +1013,7 @@ fn layout_ast(ui: &egui::Ui, ast: &Ast, size: f32, display: bool) -> MathLayout 
                 dy: -axis,
                 w,
                 thick: (size * 0.05).max(1.0),
+                color: None,
             });
             out
         }
@@ -873,6 +1038,7 @@ fn layout_ast(ui: &egui::Ui, ast: &Ast, size: f32, display: bool) -> MathLayout 
                 dy: -b.ascent - size * 0.08,
                 w: b.width,
                 thick: (size * 0.04).max(1.0),
+                color: None,
             });
             out.width = ix + rw + b.width;
             out.ascent = (b.ascent + size * 0.12).max(rasc).max(iasc);
@@ -996,7 +1162,83 @@ fn layout_ast(ui: &egui::Ui, ast: &Ast, size: f32, display: bool) -> MathLayout 
             }
             out
         }
-        Ast::Matrix(rows, kind) => layout_matrix(ui, rows, *kind, size, display),
+        Ast::Color(color, body) => {
+            let mut l = layout_ast(ui, body, size, display);
+            for item in &mut l.items {
+                match item {
+                    MItem::Glyph { color: c, .. } => *c = Some(*color),
+                    MItem::Rule { color: c, .. } => *c = Some(*color),
+                    MItem::Line { .. } => {}
+                }
+            }
+            l
+        }
+        Ast::Cancel(body, back, both) => {
+            let mut l = layout_ast(ui, body, size, display);
+            let w = l.width;
+            let a = l.ascent;
+            let d = l.descent;
+            let color = crate::theme::DANGER;
+            let thick = (size * 0.06).max(1.0);
+            if !back {
+                l.items.push(MItem::Line {
+                    p1: egui::pos2(-1.0, -a),
+                    p2: egui::pos2(w + 1.0, d),
+                    thick,
+                    color,
+                });
+            }
+            if *back || *both {
+                l.items.push(MItem::Line {
+                    p1: egui::pos2(-1.0, d),
+                    p2: egui::pos2(w + 1.0, -a),
+                    thick,
+                    color,
+                });
+            }
+            l
+        }
+        Ast::Strike(body) => {
+            let mut l = layout_ast(ui, body, size, display);
+            let w = l.width;
+            let mid = (l.descent - l.ascent) / 2.0;
+            l.items.push(MItem::Line {
+                p1: egui::pos2(-1.0, mid),
+                p2: egui::pos2(w + 1.0, mid),
+                thick: (size * 0.05).max(1.0),
+                color: crate::theme::DANGER,
+            });
+            l
+        }
+        Ast::Boxed(body) => {
+            let mut l = layout_ast(ui, body, size, display);
+            let pad = size * 0.18;
+            let w = l.width;
+            let a = l.ascent;
+            let d = l.descent;
+            let color = crate::theme::LINK;
+            let thick = (size * 0.05).max(1.0);
+            let rect = |x1: f32, y1: f32, x2: f32, y2: f32| MItem::Line {
+                p1: egui::pos2(x1, y1),
+                p2: egui::pos2(x2, y2),
+                thick,
+                color,
+            };
+            let (l0, r0) = (-pad, w + pad);
+            let (t0, b0) = (-a - pad, d + pad);
+            l.items.push(rect(l0, t0, r0, t0));
+            l.items.push(rect(l0, b0, r0, b0));
+            l.items.push(rect(l0, t0, l0, b0));
+            l.items.push(rect(r0, t0, r0, b0));
+            for item in &mut l.items {
+                shift_item(item, pad, 0.0);
+            }
+            l.width = w + pad * 2.0;
+            l.ascent = a + pad;
+            l.descent = d + pad;
+            l
+        }
+        Ast::Matrix(rows, kind, aligns) => layout_matrix(ui, rows, *kind, aligns, size, display),
         Ast::Accent(body, ch) => {
             let b = layout_ast(ui, body, size, display);
             let mut out = empty();
@@ -1021,6 +1263,7 @@ fn layout_ast(ui: &egui::Ui, ast: &Ast, size: f32, display: bool) -> MathLayout 
                         dy: -b.ascent - size * 0.08,
                         w: b.width,
                         thick: (size * 0.05).max(1.0),
+                        color: None,
                     });
                     out.ascent = out.ascent.max(b.ascent + size * 0.14);
                 }
@@ -1036,6 +1279,7 @@ fn layout_matrix(
     ui: &egui::Ui,
     rows: &[Vec<Ast>],
     kind: MatrixKind,
+    aligns: &[HAlign],
     size: f32,
     display: bool,
 ) -> MathLayout {
@@ -1066,10 +1310,15 @@ fn layout_matrix(
         let desc = line.iter().fold(0.0f32, |m, c| m.max(c.descent));
         let mut x = 0.0f32;
         for (c, cell) in line.iter_mut().enumerate() {
-            let cx = if kind == MatrixKind::Aligned || kind == MatrixKind::Cases {
-                x
+            let align = if matches!(kind, MatrixKind::Aligned | MatrixKind::Cases) {
+                HAlign::Left
             } else {
-                x + (widths[c] - cell.width) / 2.0
+                aligns.get(c).copied().unwrap_or(HAlign::Center)
+            };
+            let cx = match align {
+                HAlign::Left => x,
+                HAlign::Center => x + (widths[c] - cell.width) / 2.0,
+                HAlign::Right => x + widths[c] - cell.width,
             };
             // Align at the baseline of this row.
             let cw = cell.width;
@@ -1152,11 +1401,18 @@ pub fn paint_math(
                 x,
                 dy,
                 ascent,
+                color: item_color,
             } => {
                 let pos = egui::pos2(rect.min.x + x, baseline + dy - ascent);
-                painter.galley(pos, galley.clone(), color);
+                painter.galley(pos, galley.clone(), item_color.unwrap_or(color));
             }
-            MItem::Rule { x, dy, w, thick } => {
+            MItem::Rule {
+                x,
+                dy,
+                w,
+                thick,
+                color: item_color,
+            } => {
                 let y = baseline + dy;
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -1164,7 +1420,21 @@ pub fn paint_math(
                         egui::vec2(*w, *thick),
                     ),
                     0.0,
-                    color,
+                    item_color.unwrap_or(color),
+                );
+            }
+            MItem::Line {
+                p1,
+                p2,
+                thick,
+                color: line_color,
+            } => {
+                painter.line_segment(
+                    [
+                        egui::pos2(rect.min.x + p1.x, baseline + p1.y),
+                        egui::pos2(rect.min.x + p2.x, baseline + p2.y),
+                    ],
+                    egui::Stroke::new(*thick, *line_color),
                 );
             }
         }
@@ -1187,6 +1457,33 @@ mod tests {
         // Malformed input must not panic.
         let _ = parse_ast(r"\frac{");
         let _ = parse_ast(r"\left( x");
+    }
+
+    #[test]
+    fn parses_colors_cancel_and_array() {
+        assert!(matches!(parse_ast(r"\textcolor{red}{x}"), Ast::Color(..)));
+        assert!(matches!(parse_ast(r"\cancel{x}"), Ast::Cancel(..)));
+        assert!(matches!(parse_ast(r"\bcancel{x}"), Ast::Cancel(..)));
+        assert!(matches!(parse_ast(r"\xcancel{x}"), Ast::Cancel(..)));
+        assert!(matches!(parse_ast(r"\sout{x}"), Ast::Strike(..)));
+        assert!(matches!(parse_ast(r"\boxed{x}"), Ast::Boxed(..)));
+        match parse_ast(r"\begin{array}{lcr} a & b & c \\ d & e & f \end{array}") {
+            Ast::Matrix(_, _, aligns) => {
+                assert_eq!(aligns, vec![HAlign::Left, HAlign::Center, HAlign::Right]);
+            }
+            other => panic!("expected a matrix, got {other:?}"),
+        }
+        // `\color{blue}` wraps the rest of its group.
+        match parse_ast(r"a + \color{blue} b + c") {
+            Ast::Row(items) => assert!(items.iter().any(|i| matches!(i, Ast::Color(..)))),
+            other => panic!("expected a row, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn latex_colors_are_known() {
+        assert_ne!(latex_color("red"), crate::theme::TEXT);
+        assert_eq!(latex_color("not-a-colour"), crate::theme::TEXT);
     }
 
     #[test]
