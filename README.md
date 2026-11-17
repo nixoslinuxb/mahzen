@@ -452,9 +452,11 @@ Details borrowed from that theme:
 - **Resize-safe layout** — panes never squeeze the editor to nothing:
   - the vertical tab strip is capped at ~30% of the editor width and shrinks its
     tabs; with too many tabs it falls back to the wrapping horizontal bar,
-  - the split/second panes only open when there is room (`split_pane_width`
-    keeps a minimum editor width) and their drag range is computed from the
-    current window size,
+  - the split preview and the second pane are laid out as **explicit
+    rectangles** with a draggable divider (not nested `SidePanel`s), so
+    widening one pane can never draw it over the other; the divider keeps a
+    minimum width for both sides and its share is remembered in
+    `config.json` (`split_frac`),
   - side-panel width limits and the sidebar-graph height range scale with the
     window, and the mini graph is hidden on short windows,
   - the ribbon and right-panel action rows wrap instead of overflowing,

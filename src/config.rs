@@ -89,6 +89,9 @@ pub struct Config {
     /// Stack tabs as full-width rows (Obsidian's stacked tabs).
     #[serde(default)]
     pub stacked_tabs: bool,
+    /// Share of the editor area taken by the right-hand split pane (0.05–0.95).
+    #[serde(default = "default_split_frac")]
+    pub split_frac: f32,
     /// Graph colour groups: a tag prefix → palette index (0..7).
     #[serde(default)]
     pub graph_color_groups: Vec<(String, usize)>,
@@ -150,6 +153,10 @@ fn default_force() -> f32 {
     1.0
 }
 
+fn default_split_frac() -> f32 {
+    0.45
+}
+
 fn default_lang() -> String {
     "en".to_string()
 }
@@ -177,6 +184,7 @@ impl Default for Config {
             tag_sort_count: false,
             watch_external: true,
             stacked_tabs: false,
+            split_frac: default_split_frac(),
             graph_color_groups: Vec::new(),
             graph_repulsion: 1.0,
             graph_attraction: 1.0,

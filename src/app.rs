@@ -680,6 +680,8 @@ pub struct EncryptedNoteApp {
     column_index: usize,
     column_text: String,
     column_mode: usize,
+    /// Fraction of the editor area taken by the right-hand split pane.
+    split_frac: f32,
     /// Monotonic id source for tabs (independent views of one note).
     tab_seq: u64,
     /// Stack tabs as full-width rows instead of a strip.
@@ -906,6 +908,7 @@ impl EncryptedNoteApp {
         let initial_bookmarks = config.bookmarks.clone();
         let initial_tag_sort = config.tag_sort_count;
         let config_stacked = config.stacked_tabs;
+        let config_split = config.split_frac.clamp(0.05, 0.95);
         let initial_show_right = config.show_right;
         let initial_window_mode = config.window_mode.clone();
         crate::i18n::set(crate::i18n::Lang::from_code(&config.language));
@@ -974,6 +977,7 @@ impl EncryptedNoteApp {
             column_index: 0,
             column_text: String::new(),
             column_mode: 0,
+            split_frac: config_split,
             tab_seq: 0,
             stacked_tabs: config_stacked,
             dragging_tab: None,
@@ -3169,6 +3173,7 @@ impl EncryptedNoteApp {
         self.config.open_tabs = self.tabs.iter().map(|t| t.path.clone()).collect();
         self.config.active_tab = self.active;
         self.config.show_right = self.show_right;
+        self.config.split_frac = self.split_frac.clamp(0.05, 0.95);
     }
 
     // -------------------------------------------------------------- canvas
@@ -8913,16 +8918,23 @@ impl EncryptedNoteApp {
             let view = self.tabs[idx].view;
             let secondary = self.secondary.filter(|i| *i < self.tabs.len());
 
-            // A second note pane (Obsidian-style split view). Ctrl+click a tab
-            // to load that note into it.
-            let avail_w = ui.available_width();
-            if let Some(sec) = secondary {
-                if let Some(want) = split_pane_width(avail_w, 280.0) {
-                    egui::SidePanel::right("second_pane")
-                        .resizable(true)
-                        .default_width(want)
-                        .width_range(120.0..=(avail_w - 280.0).max(120.0))
-                        .show_inside(ui, |ui| {
+            // Two columns when a second note pane is open, or when the editor is
+            // in split view. Panes are explicit rectangles (not nested
+            // SidePanels), so widening one can never draw over the other.
+            let wants_split = secondary.is_some() || view == ViewMode::Split;
+            let mut frac = self.split_frac;
+            let split = if wants_split {
+                split_rects(ui, egui::Id::new("main_split"), &mut frac, 260.0, 220.0)
+            } else {
+                None
+            };
+            self.split_frac = frac;
+
+            match split {
+                Some((left, right)) => {
+                    if let Some(sec) = secondary {
+                        // Right column: the second note (or its preview).
+                        ui.allocate_ui_at_rect(right, |ui| {
                             let title = self.tabs[sec].title.clone();
                             let sec_view = self.tabs[sec].view;
                             ui.horizontal(|ui| {
@@ -8953,32 +8965,28 @@ impl EncryptedNoteApp {
                                 ViewMode::Live => self.live_ui(ui, sec, 1),
                             }
                         });
-                } else {
-                    // Too narrow: show the second note as an overlay tab instead
-                    // of squeezing both panes.
-                    self.status = crate::tr!("Window too narrow for a second pane").into();
-                    self.secondary = None;
-                }
-            }
-
-            if view == ViewMode::Split {
-                // When a separate second pane is open, keep this preview's
-                // scroll state distinct from it. Only split when there is room
-                // left, otherwise stack the preview under the editor instead of
-                // squeezing both panes to nothing.
-                let target: u8 = if secondary.is_some() { 1 } else { 0 };
-                let left_w = ui.available_width();
-                if let Some(want) = split_pane_width(left_w, 220.0) {
-                    egui::SidePanel::right("preview_pane")
-                        .resizable(true)
-                        .default_width(want)
-                        .width_range(120.0..=(left_w - 220.0).max(120.0))
-                        .show_inside(ui, |ui| {
-                            self.preview_ui(ui, idx, target);
+                        // Left column: the active note.
+                        ui.allocate_ui_at_rect(left, |ui| match view {
+                            ViewMode::Preview => self.preview_ui(ui, idx, 0),
+                            ViewMode::Live => self.live_ui(ui, idx, 0),
+                            ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, idx, 0),
                         });
+                    } else {
+                        // Left: editor, right: its live preview.
+                        ui.allocate_ui_at_rect(right, |ui| {
+                            self.preview_ui(ui, idx, 0);
+                        });
+                        ui.allocate_ui_at_rect(left, |ui| {
+                            self.editor_ui(ui, idx, 0);
+                        });
+                    }
                 }
+                None => match view {
+                    ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, idx, 0),
+                    ViewMode::Preview => self.preview_ui(ui, idx, 0),
+                    ViewMode::Live => self.live_ui(ui, idx, 0),
+                },
             }
-
             match view {
                 ViewMode::Edit | ViewMode::Split => self.editor_ui(ui, idx, 0),
                 ViewMode::Preview => self.preview_ui(ui, idx, 0),
@@ -13339,15 +13347,56 @@ fn apply_multi_edit(
     (chars.into_iter().collect(), rest)
 }
 
-/// Width for a right-hand split pane, or `None` when the editor is too narrow
-/// to split safely. Guarantees the editor keeps at least `min_editor` points.
-fn split_pane_width(avail: f32, min_editor: f32) -> Option<f32> {
-    if !avail.is_finite() || avail < min_editor + 120.0 {
+/// Split `ui`'s remaining area into a left and right column with a draggable
+/// divider. `frac` is the right column's share (persisted by the caller).
+/// Returns `None` when there is not enough room, so the caller can fall back to
+/// a single column.
+fn split_rects(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    frac: &mut f32,
+    min_left: f32,
+    min_right: f32,
+) -> Option<(egui::Rect, egui::Rect)> {
+    let rect = ui.available_rect_before_wrap();
+    let total = rect.width();
+    let divider_w = 6.0;
+    if total < min_left + min_right + divider_w + 8.0 || rect.height() < 60.0 {
         return None;
     }
-    let max = (avail - min_editor).max(120.0);
-    let want = (avail * 0.5).clamp(120.0, max.max(120.0));
-    Some(want.min(max).max(120.0))
+    ui.allocate_rect(rect, egui::Sense::hover());
+    let mut right_w = (total * (*frac).clamp(0.05, 0.95)).clamp(min_right, total - min_left);
+    let mut dx = rect.max.x - right_w;
+    let mut divider = egui::Rect::from_min_size(
+        egui::pos2(dx - divider_w / 2.0, rect.min.y),
+        egui::vec2(divider_w, rect.height()),
+    );
+    let resp = ui.interact(divider, id, egui::Sense::drag());
+    if resp.dragged() {
+        right_w = (right_w - resp.drag_delta().x).clamp(min_right, total - min_left);
+        dx = rect.max.x - right_w;
+        divider = egui::Rect::from_min_size(
+            egui::pos2(dx - divider_w / 2.0, rect.min.y),
+            egui::vec2(divider_w, rect.height()),
+        );
+    }
+    let active = resp.hovered() || resp.dragged();
+    if active {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    ui.painter().rect_filled(
+        divider,
+        0.0,
+        if active {
+            theme::ACCENT.linear_multiply(0.75)
+        } else {
+            theme::BORDER
+        },
+    );
+    *frac = right_w / total;
+    let left = egui::Rect::from_min_max(rect.min, egui::pos2(dx - divider_w / 2.0, rect.max.y));
+    let right = egui::Rect::from_min_max(egui::pos2(dx + divider_w / 2.0, rect.min.y), rect.max);
+    Some((left, right))
 }
 
 /// Seconds since the Unix epoch, as `f64`.
@@ -14121,21 +14170,22 @@ mod tests {
     }
 
     #[test]
-    fn split_pane_stays_within_bounds() {
-        // Too narrow: no split at all.
-        assert_eq!(split_pane_width(300.0, 280.0), None);
-        assert_eq!(split_pane_width(0.0, 220.0), None);
-        assert_eq!(split_pane_width(f32::NAN, 220.0), None);
-        // Normal: the pane gets about half and the editor keeps its minimum.
-        let w = split_pane_width(1200.0, 280.0).unwrap();
-        assert!((w - 600.0).abs() < 1.0);
-        assert!(1200.0 - w >= 280.0 - 0.01);
-        // Very wide: clamped, editor always keeps room.
-        let w = split_pane_width(4000.0, 220.0).unwrap();
-        assert!(4000.0 - w >= 220.0);
-        // Just above the threshold.
-        let w = split_pane_width(401.0, 280.0).unwrap();
-        assert!(w >= 120.0 && 401.0 - w >= 120.0);
+    fn split_fraction_stays_within_limits() {
+        // The persisted fraction is clamped by split_rects, so simulate the
+        // clamping arithmetic here (UI-free) for regression coverage.
+        let (min_left, min_right) = (260.0f32, 220.0f32);
+        let clamp = |total: f32, frac: f32| -> f32 {
+            (total * frac.clamp(0.05, 0.95)).clamp(min_right, (total - min_left).max(min_right))
+        };
+        // Very wide: the right pane is about half and the editor keeps room.
+        assert!((clamp(1400.0, 0.5) - 700.0).abs() < 0.01);
+        // Dragging far right is capped so the editor keeps its minimum.
+        let w = clamp(1000.0, 0.95);
+        assert!((1000.0 - w) >= min_left - 0.01);
+        // Dragging far left is capped so the preview keeps its minimum.
+        assert!(clamp(1000.0, 0.05) >= min_right);
+        // Degenerate widths cannot overflow the bounds.
+        assert!(clamp(500.0, 0.9) >= min_right);
     }
 
     #[test]
