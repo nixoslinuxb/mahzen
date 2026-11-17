@@ -190,6 +190,8 @@ const TR: &[(&str, &str)] = &[
     ),
     ("Random bookmark", "Rastgele yer imi"),
     ("Calendar", "Takvim"),
+    ("Month", "Ay"),
+    ("TODAY", "BUGÜN"),
     ("Tags", "Etiketler"),
     ("No tags yet", "Henüz etiket yok"),
     ("Outline", "Ana hat"),

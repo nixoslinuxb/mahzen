@@ -613,9 +613,14 @@ pub fn render(
                     5 => base_size * 1.1,
                     _ => base_size,
                 };
-                ui.add_space(4.0);
-                ui.label(RichText::new(rest.trim()).size(size).strong());
-                ui.add_space(2.0);
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(rest.trim())
+                        .size(size)
+                        .strong()
+                        .color(crate::theme::heading_color(hashes)),
+                );
+                ui.add_space(3.0);
                 i += 1;
                 continue;
             }
@@ -623,10 +628,15 @@ pub fn render(
 
         // Blockquote.
         if let Some(rest) = trimmed.strip_prefix("> ") {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("▏").color(ui.visuals().hyperlink_color));
-                render_segments(ui, rest, base_size, &mut clicked, embed);
-            });
+            egui::Frame::none()
+                .fill(crate::theme::ACCENT.linear_multiply(0.06))
+                .inner_margin(egui::Margin::symmetric(10.0, 3.0))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("▏").color(crate::theme::ACCENT));
+                        render_segments(ui, rest, base_size, &mut clicked, embed);
+                    });
+                });
             i += 1;
             continue;
         }
@@ -772,17 +782,23 @@ fn display_math_tagged(ui: &mut egui::Ui, tex: &str, base_size: f32, number: Opt
 
 fn code_block(ui: &mut egui::Ui, block: &str, base_size: f32) {
     egui::Frame::none()
-        .fill(ui.visuals().extreme_bg_color)
-        .inner_margin(egui::Margin::same(6.0))
-        .rounding(egui::Rounding::same(4.0))
+        .fill(crate::theme::CODE_BG)
+        .stroke(egui::Stroke::new(1.0_f32, crate::theme::BORDER))
+        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
+        .rounding(egui::Rounding::same(6.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.add(
-                egui::Label::new(RichText::new(block.trim_end()).monospace().size(base_size))
-                    .wrap(true),
+                egui::Label::new(
+                    RichText::new(block.trim_end())
+                        .monospace()
+                        .size(base_size * 0.95)
+                        .color(Color32::from_rgb(0xcf, 0xd6, 0xe6)),
+                )
+                .wrap(true),
             );
         });
-    ui.add_space(4.0);
+    ui.add_space(6.0);
 }
 
 fn render_embed(
@@ -802,13 +818,13 @@ fn render_embed(
         return;
     };
     egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
+        .fill(crate::theme::ACCENT.linear_multiply(0.06))
         .stroke(egui::Stroke::new(
             1.0_f32,
-            ui.visuals().hyperlink_color.linear_multiply(0.4),
+            crate::theme::ACCENT.linear_multiply(0.4),
         ))
-        .inner_margin(egui::Margin::same(10.0))
-        .rounding(egui::Rounding::same(6.0))
+        .inner_margin(egui::Margin::same(11.0))
+        .rounding(egui::Rounding::same(7.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(&title).strong().small());
@@ -835,11 +851,12 @@ fn render_callout(
     depth: usize,
     clicked: &mut Vec<LinkClick>,
 ) {
-    let accent = ui.visuals().hyperlink_color;
+    let accent = crate::theme::ACCENT;
     egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(10.0, 8.0))
-        .rounding(egui::Rounding::same(6.0))
+        .fill(accent.linear_multiply(0.07))
+        .stroke(egui::Stroke::new(1.0_f32, accent.linear_multiply(0.25)))
+        .inner_margin(egui::Margin::symmetric(11.0, 9.0))
+        .rounding(egui::Rounding::same(7.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -969,7 +986,8 @@ fn render_one(
             if code {
                 rt = rt
                     .monospace()
-                    .background_color(ui.visuals().extreme_bg_color);
+                    .color(Color32::from_rgb(0xcf, 0xd6, 0xe6))
+                    .background_color(crate::theme::CODE_BG);
             }
             ui.label(rt);
         }
@@ -1019,7 +1037,8 @@ fn render_one(
             ui.label(
                 RichText::new(text)
                     .size(base_size)
-                    .background_color(egui::Color32::from_rgb(0x5a, 0x4a, 0x1e)),
+                    .color(crate::theme::HIGHLIGHT_TEXT)
+                    .background_color(crate::theme::HIGHLIGHT),
             );
         }
     }
@@ -1067,6 +1086,7 @@ struct InlineFlags {
     italic: bool,
     strike: bool,
     code: bool,
+    highlight: bool,
 }
 
 /// Build a [`egui::text::LayoutJob`] for the editor that renders markdown with
@@ -1184,6 +1204,7 @@ fn base_format(size: f32, color: Color32) -> egui::text::TextFormat {
     egui::text::TextFormat {
         font_id: egui::FontId::monospace(size),
         color,
+        line_height: Some(size * 1.55),
         ..Default::default()
     }
 }
@@ -1222,8 +1243,9 @@ fn push_wysiwyg_line(
             0.0,
             egui::text::TextFormat {
                 font_id: egui::FontId::monospace(base_size),
-                color: Color32::from_gray(0x8a),
-                background: Color32::from_gray(0x24),
+                color: Color32::from_gray(0x9a),
+                background: crate::theme::CODE_BG,
+                line_height: Some(base_size * 1.5),
                 ..Default::default()
             },
         );
@@ -1246,12 +1268,13 @@ fn push_wysiwyg_line(
                 job.append(&line[..prefix], 0.0, hidden_format());
             }
             let scale = match hashes {
-                1 => 1.5,
-                2 => 1.3,
-                3 => 1.15,
-                _ => 1.05,
+                1 => 1.55,
+                2 => 1.33,
+                3 => 1.18,
+                4 => 1.08,
+                _ => 1.03,
             };
-            let fmt = base_format(base_size * scale, crate::theme::TEXT);
+            let fmt = base_format(base_size * scale, crate::theme::heading_color(hashes));
             emit_inline(
                 job,
                 &line[prefix..],
@@ -1333,10 +1356,14 @@ fn style_for(
     if flags.strike {
         out.strikethrough = egui::Stroke::new(1.0_f32, out.color);
     }
+    if flags.highlight {
+        out.background = crate::theme::HIGHLIGHT;
+        out.color = crate::theme::HIGHLIGHT_TEXT;
+    }
     if flags.code {
         out.font_id = egui::FontId::monospace(out.font_id.size * 0.96);
-        out.background = Color32::from_gray(0x2c);
-        out.color = Color32::from_rgb(0xc8, 0xc8, 0xc8);
+        out.background = crate::theme::CODE_BG;
+        out.color = Color32::from_rgb(0xcf, 0xd6, 0xe6);
     }
     if link {
         out.color = crate::theme::LINK;
@@ -1423,6 +1450,7 @@ fn emit_inline(
         Strike,
         Code,
         Italic,
+        Highlight,
     }
     let mut flags = initial;
     let mut i = 0usize;
@@ -1449,6 +1477,7 @@ fn emit_inline(
                 Marker::Strike => flags.strike = !flags.strike,
                 Marker::Code => flags.code = !flags.code,
                 Marker::Italic => flags.italic = !flags.italic,
+                Marker::Highlight => flags.highlight = !flags.highlight,
             }
         };
     }
@@ -1460,7 +1489,7 @@ fn emit_inline(
             if let Some(pos) = revealed.iter().position(|(at, _)| *at == i) {
                 let (_, kind) = revealed.remove(pos);
                 let len = match kind {
-                    Marker::Bold | Marker::Strike => 2,
+                    Marker::Bold | Marker::Strike | Marker::Highlight => 2,
                     Marker::Code | Marker::Italic => 1,
                 };
                 flush!(i);
@@ -1475,6 +1504,8 @@ fn emit_inline(
                 Some(("**", 2, Marker::Bold))
             } else if rest.starts_with("~~") {
                 Some(("~~", 2, Marker::Strike))
+            } else if rest.starts_with("==") {
+                Some(("==", 2, Marker::Highlight))
             } else if rest.starts_with('`') {
                 Some(("`", 1, Marker::Code))
             } else if rest.starts_with('*') || rest.starts_with('_') {

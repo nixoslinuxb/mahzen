@@ -30,6 +30,8 @@ pub enum Icon {
     ChevronRight,
     ChevronDown,
     ChevronLeft,
+    /// Kept for compatibility with saved layouts.
+    #[allow(dead_code)]
     Today,
     Rss,
     Bookmark,

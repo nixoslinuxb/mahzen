@@ -346,9 +346,29 @@ is provided for a system-wide `pacman` install too.
 
 ## Theme
 
-The dark theme mirrors Obsidian's default dark palette: `#1e1e1e` main /
-`#161616` sidebars, `#8a5cf5` accent, `#dcddde` text, subtle `#333` borders, and
-small corner radii on widgets, menus, and windows.
+The interface follows Obsidian running the **LYT Mode** theme: deep blue-black
+sidebars and ribbon (`#1e1f24`, `#1a1b21`), a lighter blue-grey editor surface
+(`#2f303a`), periwinkle-blue accents (`#7c9ce0`), a periwinkle selection
+(`#54587d`), muted `#9a9dae` secondary text on `#dcdde3`, and soft `#3a3b47`
+borders with small corner radii.
+
+Details borrowed from that theme:
+
+- **Coloured headings** — H1 lavender, H2 periwinkle, H3 steel blue, then sage,
+  sand and rose.
+- **Yellow text highlight** — `==highlight==` renders as LYT's warm yellow with
+  dark text, in both the preview and the editor.
+- **Tabs** — a dark strip with the active tab lifted to the editor colour and an
+  accent line along its top edge; `Ctrl+click` still targets the second pane.
+- **Ribbon** — a narrow, darker icon strip on the far left.
+- **Side panels** — uppercase micro-headers, rounded selected rows with an
+  accent edge, and tag pills.
+- **Calendar card** — month header with `TODAY`, weekday row and an accent-filled
+  circle for today plus a dot on days that have a daily note.
+- **Breadcrumb + inline title** — vault ▪ folders ▪ note above an oversized
+  coloured note title.
+- **Reading surface** — wider line height, rounded bordered code blocks, tinted
+  callouts with an accent bar, and a quoted block with an accent rule.
 
 ## Attachments
 

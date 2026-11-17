@@ -6914,11 +6914,11 @@ impl EncryptedNoteApp {
 
     fn top_bar(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::side_top_panel(&ctx.style())
-            .fill(theme::PANEL)
-            .inner_margin(egui::Margin::symmetric(3.0, 6.0));
+            .fill(theme::PANEL_DEEP)
+            .inner_margin(egui::Margin::symmetric(4.0, 8.0));
         egui::SidePanel::left("tool_bar")
             .frame(frame)
-            .exact_width(56.0)
+            .exact_width(50.0)
             .resizable(false)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
@@ -7061,7 +7061,7 @@ impl EncryptedNoteApp {
     fn left_panel(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::side_top_panel(&ctx.style())
             .fill(theme::PANEL)
-            .inner_margin(egui::Margin::symmetric(10.0, 10.0));
+            .inner_margin(egui::Margin::symmetric(8.0, 10.0));
         egui::SidePanel::left("left_panel")
             .frame(frame)
             .resizable(true)
@@ -7134,9 +7134,10 @@ impl EncryptedNoteApp {
                             }
                         });
                 } else {
+                    theme::section_label(ui, "Vault");
                     ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Folder, 15.0, theme::ACCENT);
-                        ui.label(RichText::new("Vault").strong());
+                        icons::icon(ui, Icon::Folder, 14.0, theme::ACCENT);
+                        ui.label(RichText::new("Files").size(12.0).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if icons::button(
                                 ui,
@@ -7279,7 +7280,7 @@ impl EncryptedNoteApp {
         }
         let frame = egui::Frame::side_top_panel(&ctx.style())
             .fill(theme::PANEL)
-            .inner_margin(egui::Margin::symmetric(12.0, 12.0));
+            .inner_margin(egui::Margin::symmetric(10.0, 10.0));
         egui::SidePanel::right("right_panel")
             .frame(frame)
             .resizable(true)
@@ -7409,61 +7410,92 @@ impl EncryptedNoteApp {
                         }
                     });
 
-                // Calendar (daily notes)
-                egui::CollapsingHeader::new(crate::tr!("Calendar"))
-                    .default_open(true)
+                // Calendar (daily notes) — a card with a month header, a
+                // weekday row and an accent-filled "today" cell.
+                theme::section_label(ui, "Calendar");
+                egui::Frame::none()
+                    .fill(theme::CODE_BG)
+                    .rounding(egui::Rounding::same(6.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 8.0))
                     .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
-                            if icons::button(
-                                ui,
-                                Icon::ChevronLeft,
-                                16.0,
-                                true,
-                                false,
-                                "Previous month",
-                            )
-                            .clicked()
-                            {
-                                let (y, m) =
-                                    crate::dates::add_months(self.cal_year, self.cal_month, -1);
-                                self.cal_year = y;
-                                self.cal_month = m;
-                            }
                             ui.label(
-                                RichText::new(format!(
-                                    "{} {}",
-                                    crate::dates::month_name(self.cal_month),
-                                    self.cal_year
-                                ))
-                                .strong(),
+                                RichText::new(format!("{} {}", crate::tr!("Month"), self.cal_year))
+                                    .size(11.0)
+                                    .strong(),
                             );
-                            if icons::button(
-                                ui,
-                                Icon::ChevronRight,
-                                16.0,
-                                true,
-                                false,
-                                "Next month",
-                            )
-                            .clicked()
-                            {
-                                let (y, m) =
-                                    crate::dates::add_months(self.cal_year, self.cal_month, 1);
-                                self.cal_year = y;
-                                self.cal_month = m;
-                            }
-                            if icons::button(ui, Icon::Today, 16.0, true, false, "Today").clicked()
-                            {
-                                let (y, m, _) = crate::dates::today();
-                                self.cal_year = y;
-                                self.cal_month = m;
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(
+                                                RichText::new(crate::tr!("TODAY"))
+                                                    .size(9.5)
+                                                    .color(theme::TEXT_MUTED),
+                                            )
+                                            .frame(false),
+                                        )
+                                        .clicked()
+                                    {
+                                        let (y, m, _) = crate::dates::today();
+                                        self.cal_year = y;
+                                        self.cal_month = m;
+                                    }
+                                    if icons::button(
+                                        ui,
+                                        Icon::ChevronRight,
+                                        13.0,
+                                        true,
+                                        false,
+                                        "Next month",
+                                    )
+                                    .clicked()
+                                    {
+                                        let (y, m) = crate::dates::add_months(
+                                            self.cal_year,
+                                            self.cal_month,
+                                            1,
+                                        );
+                                        self.cal_year = y;
+                                        self.cal_month = m;
+                                    }
+                                    if icons::button(
+                                        ui,
+                                        Icon::ChevronLeft,
+                                        13.0,
+                                        true,
+                                        false,
+                                        "Previous month",
+                                    )
+                                    .clicked()
+                                    {
+                                        let (y, m) = crate::dates::add_months(
+                                            self.cal_year,
+                                            self.cal_month,
+                                            -1,
+                                        );
+                                        self.cal_year = y;
+                                        self.cal_month = m;
+                                    }
+                                },
+                            );
                         });
+                        ui.label(
+                            RichText::new(crate::dates::month_name(self.cal_month).to_uppercase())
+                                .size(10.0)
+                                .strong()
+                                .color(theme::ACCENT),
+                        );
+                        ui.add_space(3.0);
                         ui.horizontal(|ui| {
                             for w in crate::dates::WEEKDAY_SHORT {
                                 ui.add_sized(
                                     [22.0, 14.0],
-                                    egui::Label::new(RichText::new(w).small().weak()),
+                                    egui::Label::new(
+                                        RichText::new(w).size(9.0).color(theme::TEXT_MUTED),
+                                    ),
                                 );
                             }
                         });
@@ -7478,7 +7510,7 @@ impl EncryptedNoteApp {
                                 for cell in week {
                                     match cell {
                                         None => {
-                                            ui.add_sized([22.0, 22.0], egui::Label::new(""));
+                                            ui.add_sized([22.0, 21.0], egui::Label::new(""));
                                         }
                                         Some(day) => {
                                             let exists = root
@@ -7502,21 +7534,44 @@ impl EncryptedNoteApp {
                                                 .unwrap_or(false);
                                             let is_today = (ty, tm, td)
                                                 == (self.cal_year, self.cal_month, day);
-                                            let mut rt = RichText::new(day.to_string());
-                                            if exists {
-                                                rt = rt.color(theme::ACCENT).strong();
-                                            } else if is_today {
-                                                rt = rt.underline();
-                                            }
-                                            let resp = ui.add_sized(
-                                                [22.0, 22.0],
-                                                egui::Button::new(rt).frame(false),
+                                            let (rect, resp) = ui.allocate_exact_size(
+                                                egui::vec2(22.0, 21.0),
+                                                egui::Sense::click(),
                                             );
-                                            let resp = if is_today {
-                                                resp.on_hover_text("Today")
+                                            if is_today {
+                                                ui.painter().circle_filled(
+                                                    rect.center(),
+                                                    10.0,
+                                                    theme::ACCENT,
+                                                );
+                                            } else if resp.hovered() {
+                                                ui.painter().circle_filled(
+                                                    rect.center(),
+                                                    10.0,
+                                                    theme::WIDGET_HOVER,
+                                                );
+                                            }
+                                            let color = if is_today {
+                                                theme::PANEL_DEEP
+                                            } else if exists {
+                                                theme::ACCENT
                                             } else {
-                                                resp
+                                                theme::TEXT
                                             };
+                                            ui.painter().text(
+                                                rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                day.to_string(),
+                                                egui::FontId::proportional(10.5),
+                                                color,
+                                            );
+                                            if exists && !is_today {
+                                                ui.painter().circle_filled(
+                                                    egui::pos2(rect.center().x, rect.max.y - 3.0),
+                                                    1.3,
+                                                    theme::ACCENT,
+                                                );
+                                            }
                                             if resp.clicked() {
                                                 pick = Some(day);
                                             }
@@ -7848,7 +7903,10 @@ impl EncryptedNoteApp {
     }
 
     fn central_panel(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let frame = egui::Frame::central_panel(&ctx.style())
+            .fill(theme::BASE)
+            .inner_margin(egui::Margin::symmetric(16.0, 8.0));
+        egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             // The password manager and RSS reader don't need an open vault.
             if self.passwords_open {
                 self.passwords_ui(ui);
@@ -7896,6 +7954,43 @@ impl EncryptedNoteApp {
 
             if self.find_open {
                 self.find_bar_ui(ui);
+            }
+
+            // Breadcrumb: vault ▪ folders ▪ note title (Obsidian-style).
+            if let Some(tab) = self.tabs.get(self.active) {
+                let root = self.vault.as_ref().map(|v| v.root.clone());
+                let rel = root
+                    .as_ref()
+                    .and_then(|r| tab.path.strip_prefix(r).ok())
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| tab.path.clone());
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(r) = &root {
+                    if let Some(name) = r.file_name() {
+                        parts.push(name.to_string_lossy().to_string());
+                    }
+                }
+                for c in rel.components() {
+                    parts.push(c.as_os_str().to_string_lossy().to_string());
+                }
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    for (n, part) in parts.iter().enumerate() {
+                        if n > 0 {
+                            icons::icon(ui, Icon::ChevronRight, 9.0, theme::TEXT_MUTED);
+                        }
+                        ui.label(
+                            RichText::new(part)
+                                .size(10.5)
+                                .color(if n + 1 == parts.len() {
+                                    theme::TEXT
+                                } else {
+                                    theme::TEXT_MUTED
+                                }),
+                        );
+                    }
+                });
+                ui.add_space(2.0);
             }
 
             // Attachment toolbar — above the editor, below the tabs.
@@ -8015,35 +8110,108 @@ impl EncryptedNoteApp {
     fn tab_strip(&mut self, ui: &mut egui::Ui) {
         let mut to_close: Option<usize> = None;
         let mut select: Option<usize> = None;
-        // The selected tab is filled with a dark grey rather than the accent
-        // (violet) selection colour, which reads as pink.
+        // Obsidian-style tabs: a darker strip, the active tab lifted to the
+        // editor colour with an accent line along its top edge.
         ui.visuals_mut().selection.bg_fill = theme::WIDGET_ACTIVE;
         ui.visuals_mut().selection.stroke = egui::Stroke::NONE;
-        ui.horizontal_wrapped(|ui| {
-            let count = self.tabs.len();
-            for i in 0..count {
-                let dirty = self.tabs[i].dirty();
-                let title = self.tabs[i].title.clone();
-                let selected = i == self.active;
-                if dirty {
-                    icons::icon(ui, Icon::Dot, 8.0, theme::ACCENT);
-                }
-                let label = ui.selectable_label(selected, title);
-                // Ctrl+click loads the tab into the second pane instead.
-                if label.clicked() {
-                    if ui.input(|inp| inp.modifiers.command) {
-                        self.secondary = Some(i);
-                        self.secondary_live_line = 0;
-                        self.status = crate::tr!("Loaded into second pane").into();
+        let strip = ui.available_rect_before_wrap();
+        let (bar, _) =
+            ui.allocate_exact_size(egui::vec2(strip.width(), 30.0), egui::Sense::hover());
+        ui.painter().rect_filled(bar, 0.0, theme::PANEL_DEEP);
+        ui.allocate_ui_at_rect(bar.shrink2(egui::vec2(6.0, 3.0)), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let count = self.tabs.len();
+                for i in 0..count {
+                    let dirty = self.tabs[i].dirty();
+                    let title = self.tabs[i].title.clone();
+                    let selected = i == self.active;
+                    let fill = if selected {
+                        theme::BASE
                     } else {
-                        select = Some(i);
+                        theme::WIDGET.linear_multiply(0.55)
+                    };
+                    let text_color = if selected {
+                        theme::TEXT
+                    } else {
+                        theme::TEXT_MUTED
+                    };
+                    let tab_resp = egui::Frame::none()
+                        .fill(fill)
+                        .rounding(egui::Rounding {
+                            nw: 6.0,
+                            ne: 6.0,
+                            sw: 0.0,
+                            se: 0.0,
+                        })
+                        .inner_margin(egui::Margin::symmetric(9.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                if dirty {
+                                    icons::icon(ui, Icon::Dot, 6.0, theme::ACCENT);
+                                }
+                                ui.label(RichText::new(&title).size(12.0).color(text_color));
+                                let close = icons::button(
+                                    ui,
+                                    Icon::Close,
+                                    10.0,
+                                    true,
+                                    false,
+                                    crate::tr!("Close tab"),
+                                );
+                                if close.clicked() {
+                                    to_close = Some(i);
+                                }
+                            });
+                        })
+                        .response;
+                    if selected {
+                        let r = tab_resp.rect;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(r.min, egui::vec2(r.width(), 2.0)),
+                            0.0,
+                            theme::ACCENT,
+                        );
+                    }
+                    let resp = ui.interact(
+                        tab_resp.rect,
+                        ui.id().with(("tabclick", i)),
+                        egui::Sense::click(),
+                    );
+                    if resp.clicked() {
+                        if ui.input(|inp| inp.modifiers.command) {
+                            self.secondary = Some(i);
+                            self.secondary_live_line = 0;
+                            self.status = crate::tr!("Loaded into second pane").into();
+                        } else {
+                            select = Some(i);
+                        }
+                    }
+                    if resp.hovered() && !selected {
+                        ui.painter().rect_filled(
+                            tab_resp.rect,
+                            egui::Rounding {
+                                nw: 6.0,
+                                ne: 6.0,
+                                sw: 0.0,
+                                se: 0.0,
+                            },
+                            theme::WIDGET_HOVER.linear_multiply(0.5),
+                        );
                     }
                 }
-                if icons::button(ui, Icon::Close, 12.0, true, false, "Close tab").clicked() {
-                    to_close = Some(i);
-                }
-                ui.add_space(8.0);
-            }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} note(s)",
+                            self.vault.as_ref().map(|v| v.notes.len()).unwrap_or(0)
+                        ))
+                        .size(10.0)
+                        .color(theme::TEXT_MUTED),
+                    );
+                });
+            });
         });
         if let Some(i) = select {
             self.active = i;
@@ -8051,7 +8219,7 @@ impl EncryptedNoteApp {
         if let Some(i) = to_close {
             self.close_tab(i);
         }
-        ui.separator();
+        ui.add_space(6.0);
     }
 
     /// Render the force-directed graph view of notes and their links, with
@@ -8707,10 +8875,23 @@ impl EncryptedNoteApp {
         let mut text_after = String::new();
         let mut rect_after = egui::Rect::NOTHING;
         let mut wrap_after = 0.0f32;
+        let note_title = self.tabs[idx].title.clone();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .id_source(("editor_scroll", idx, pane))
             .show(ui, |ui| {
+                // Inline title, like Obsidian's document header.
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(&note_title)
+                            .size(size * 1.75)
+                            .strong()
+                            .color(theme::HEADINGS[0]),
+                    );
+                });
+                ui.add_space(10.0);
                 if multi_here {
                     self.multi_input(ui, idx, id);
                 }
@@ -10480,8 +10661,8 @@ impl EncryptedNoteApp {
 
     fn status_bar(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::side_top_panel(&ctx.style())
-            .fill(theme::PANEL)
-            .inner_margin(egui::Margin::symmetric(10.0, 4.0));
+            .fill(theme::PANEL_DEEP)
+            .inner_margin(egui::Margin::symmetric(10.0, 3.0));
         egui::TopBottomPanel::bottom("status_bar")
             .frame(frame)
             .show(ctx, |ui| {
@@ -10681,18 +10862,8 @@ fn tag_tree_row(
     ui.horizontal(|ui| {
         ui.add_space(depth as f32 * 12.0);
         if node.children.is_empty() {
-            icons::icon(ui, Icon::Tag, 12.0, color);
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new(format!("{}  ({})", node.name, node.count))
-                            .small()
-                            .color(color),
-                    )
-                    .frame(false),
-                )
-                .clicked()
-            {
+            let resp = theme::tag_pill(ui, &format!("{}  {}", node.name, node.count), false);
+            if resp.interact(egui::Sense::click()).clicked() {
                 *clicked = Some(node.full.clone());
             }
         } else {
@@ -10764,8 +10935,12 @@ fn show_tree(
             if icons::button(ui, chev, 14.0, true, false, "").clicked() {
                 toggle = true;
             }
-            icons::icon(ui, Icon::Folder, 15.0, theme::ACCENT);
-            ui.label(RichText::new(format!("{}  ({})", dir.name, dir.note_count())).strong());
+            icons::icon(ui, Icon::Folder, 14.0, theme::ACCENT.linear_multiply(0.9));
+            ui.label(
+                RichText::new(format!("{}  ({})", dir.name, dir.note_count()))
+                    .size(12.5)
+                    .color(theme::TEXT),
+            );
         });
         if toggle {
             if is_open {
@@ -10798,7 +10973,26 @@ fn show_tree(
                 .get(&file.path)
                 .cloned()
                 .unwrap_or_else(|| file.title.clone());
-            let resp = ui.selectable_label(is_selected, RichText::new(label));
+            let label_rt = RichText::new(label).size(12.5).color(theme::TEXT);
+            let resp = if is_selected {
+                egui::Frame::none()
+                    .fill(theme::ACCENT.linear_multiply(0.16))
+                    .rounding(egui::Rounding::same(4.0))
+                    .inner_margin(egui::Margin::symmetric(5.0, 1.0))
+                    .show(ui, |ui| ui.label(label_rt))
+                    .response
+                    .interact(egui::Sense::click())
+            } else {
+                ui.selectable_label(false, label_rt)
+            };
+            if is_selected {
+                let r = resp.rect;
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(r.min, egui::vec2(2.0, r.height())),
+                    1.0,
+                    theme::ACCENT,
+                );
+            }
             if resp.clicked() {
                 open = true;
             }
