@@ -1,13 +1,13 @@
 [package]
-name = "encrypted-note"
+name = "mahzen"
 version = "0.1.0"
 edition = "2021"
-description = "Encrypted Note — a native, Wayland-friendly, Obsidian-like markdown note taking app with AES-256 encryption"
+description = "Mahzen — a native, Wayland-friendly, Obsidian-like encrypted markdown note taking app (AES-256)"
 license = "MIT"
 readme = "README.md"
 
 [[bin]]
-name = "encrypted-note"
+name = "mahzen"
 path = "src/main.rs"
 
 [dependencies]

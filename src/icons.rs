@@ -53,22 +53,18 @@ pub enum Icon {
     Pause,
     Stop,
     Volume,
-    Passwords,
-    Copy,
     Star,
     Eye,
     EyeOff,
     Download,
     Upload,
-    Dice,
-    FolderPlus,
     CheckCircle,
 }
 
 impl Icon {
     /// Every icon, for tests and exhaustiveness.
     #[cfg(test)]
-    pub const ALL: [Icon; 52] = [
+    pub const ALL: [Icon; 48] = [
         Icon::Add,
         Icon::Save,
         Icon::FolderOpen,
@@ -111,15 +107,11 @@ impl Icon {
         Icon::Pause,
         Icon::Stop,
         Icon::Volume,
-        Icon::Passwords,
-        Icon::Copy,
         Icon::Star,
         Icon::Eye,
         Icon::EyeOff,
         Icon::Download,
         Icon::Upload,
-        Icon::Dice,
-        Icon::FolderPlus,
         Icon::CheckCircle,
     ];
 }
@@ -171,15 +163,11 @@ impl Icon {
             Pause => egui::include_image!("../assets/icons/pause.svg"),
             Stop => egui::include_image!("../assets/icons/stop.svg"),
             Volume => egui::include_image!("../assets/icons/volume.svg"),
-            Passwords => egui::include_image!("../assets/icons/passwords.svg"),
-            Copy => egui::include_image!("../assets/icons/copy.svg"),
             Star => egui::include_image!("../assets/icons/star.svg"),
             Eye => egui::include_image!("../assets/icons/eye.svg"),
             EyeOff => egui::include_image!("../assets/icons/eye-off.svg"),
             Download => egui::include_image!("../assets/icons/download.svg"),
             Upload => egui::include_image!("../assets/icons/upload.svg"),
-            Dice => egui::include_image!("../assets/icons/dice.svg"),
-            FolderPlus => egui::include_image!("../assets/icons/folder-plus.svg"),
             CheckCircle => egui::include_image!("../assets/icons/check-circle.svg"),
         }
     }

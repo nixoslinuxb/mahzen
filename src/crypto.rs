@@ -1,4 +1,7 @@
-//! Encryption for Encrypted Note.
+//! Encryption for Mahzen.
+//!
+//! The verifier marker string keeps its original bytes so vaults created before
+//! the rename still unlock.
 //!
 //! - **AES-256-GCM** (via `aes-gcm`) encrypts note contents at rest with
 //!   authenticated encryption.
@@ -216,54 +219,6 @@ impl VaultCrypto {
 /// Whether a byte buffer looks like an encrypted note (has our magic header).
 pub fn is_encrypted(data: &[u8]) -> bool {
     data.len() >= MAGIC.len() && &data[..MAGIC.len()] == MAGIC
-}
-
-/// Magic identifying a password-encrypted export (distinct from note files).
-const EXPORT_MAGIC: &[u8; 5] = b"ENCP1";
-
-/// Encrypt `plaintext` under an arbitrary `password`, embedding a fresh salt so
-/// the result is self-contained and can be decrypted on another machine:
-///
-/// ```text
-/// magic ("ENCP1", 5) || salt (16) || nonce (12) || AES-256-GCM ciphertext+tag
-/// ```
-pub fn encrypt_with_password(password: &str, plaintext: &[u8]) -> Vec<u8> {
-    let salt = random_bytes::<SALT_LEN>();
-    let key = derive_key(password, &salt);
-    let nonce = random_bytes::<NONCE_LEN>();
-    let cipher = Aes256Gcm::new_from_slice(&key).expect("valid key size");
-    let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext)
-        .expect("encryption cannot fail");
-    let mut out = Vec::with_capacity(EXPORT_MAGIC.len() + SALT_LEN + NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(EXPORT_MAGIC);
-    out.extend_from_slice(&salt);
-    out.extend_from_slice(&nonce);
-    out.extend_from_slice(&ciphertext);
-    out
-}
-
-/// Whether a buffer looks like a password-encrypted export.
-pub fn is_password_encrypted(data: &[u8]) -> bool {
-    data.len() >= EXPORT_MAGIC.len() && &data[..EXPORT_MAGIC.len()] == EXPORT_MAGIC
-}
-
-/// Decrypt a blob produced by [`encrypt_with_password`], or `None` on a wrong
-/// password or tampering.
-pub fn decrypt_with_password(password: &str, data: &[u8]) -> Option<Vec<u8>> {
-    if !is_password_encrypted(data) {
-        return None;
-    }
-    let body = &data[EXPORT_MAGIC.len()..];
-    if body.len() < SALT_LEN + NONCE_LEN {
-        return None;
-    }
-    let salt = &body[..SALT_LEN];
-    let nonce = &body[SALT_LEN..SALT_LEN + NONCE_LEN];
-    let ciphertext = &body[SALT_LEN + NONCE_LEN..];
-    let key = derive_key(password, salt);
-    let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
-    cipher.decrypt(Nonce::from_slice(nonce), ciphertext).ok()
 }
 
 /// Derive a 256-bit key from a password using Argon2id with default parameters
@@ -531,26 +486,6 @@ mod tests {
         for _ in 0..1000 {
             assert!(random_below(1_000_003) < 1_000_003);
         }
-    }
-
-    #[test]
-    fn password_export_roundtrips() {
-        let secret = b"{\"entries\":[]}";
-        let blob = encrypt_with_password("CorrectHorse9!Battery", secret);
-        assert!(is_password_encrypted(&blob));
-        assert!(!is_encrypted(&blob), "export magic differs from note magic");
-        assert_eq!(
-            decrypt_with_password("CorrectHorse9!Battery", &blob).as_deref(),
-            Some(&secret[..])
-        );
-    }
-
-    #[test]
-    fn password_export_rejects_wrong_password_and_uses_fresh_salt() {
-        let a = encrypt_with_password("CorrectHorse9!Battery", b"hi");
-        let b = encrypt_with_password("CorrectHorse9!Battery", b"hi");
-        assert_ne!(a, b, "a fresh salt must be embedded each time");
-        assert!(decrypt_with_password("WrongPassword123!", &a).is_none());
     }
 
     #[test]

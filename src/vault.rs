@@ -248,7 +248,7 @@ mod tests {
 
     fn temp_dir(tag: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("encrypted-note-test-{tag}-{}", std::process::id()));
+        dir.push(format!("mahzen-test-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

@@ -796,27 +796,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "encrypted-note"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "argon2",
- "eframe",
- "egui",
- "egui-winit",
- "egui_extras",
- "getrandom 0.3.4",
- "image",
- "regex",
- "resvg",
- "roxmltree 0.19.0",
- "serde",
- "serde_json",
- "wayland-client",
- "wayland-protocols 0.32.13",
-]
-
-[[package]]
 name = "enum-map"
 version = "2.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1545,6 +1524,27 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "mahzen"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "eframe",
+ "egui",
+ "egui-winit",
+ "egui_extras",
+ "getrandom 0.3.4",
+ "image",
+ "regex",
+ "resvg",
+ "roxmltree 0.19.0",
+ "serde",
+ "serde_json",
+ "wayland-client",
+ "wayland-protocols 0.32.13",
+]
 
 [[package]]
 name = "malloc_buf"

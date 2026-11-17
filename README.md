@@ -1,6 +1,6 @@
-# Encrypted Note
+# Mahzen
 
-[![CI](https://github.com/nixoslinuxb/encrypted-note/actions/workflows/ci.yml/badge.svg)](https://github.com/nixoslinuxb/encrypted-note/actions/workflows/ci.yml)
+[![CI](https://github.com/nixoslinuxb/mahzen/actions/workflows/ci.yml/badge.svg)](https://github.com/nixoslinuxb/mahzen/actions/workflows/ci.yml)
 
 A native, Obsidian-like markdown note-taking app written in Rust, with
 **AES-256 encryption** for everything it stores. It is **Wayland-only** — it
@@ -19,7 +19,7 @@ no passwordless way in.
   [Editing experience](#editing-experience) ·
   [Obsidian-parity features](#obsidian-parity-features)
 - [Theme](#theme) · [Attachments](#attachments) · [RSS reader](#rss-reader) ·
-  [Password manager](#password-manager) · [Icons & UX](#icons--ux) ·
+  [Icons & UX](#icons--ux) ·
   [Supported markdown](#supported-markdown)
 - [Install](#install-arch-linux) · [Run](#run) ·
   [Security hardening](#security-hardening) ·
@@ -135,7 +135,7 @@ Wayland uses **Vulkan** by default, and it asks for a **high-performance**
 (hardware) adapter. On launch it prints the chosen device once, e.g.:
 
 ```
-Encrypted Note: GPU rendering — backend=Vulkan, device='NVIDIA GeForce RTX 3070', driver='NVIDIA 615.78.08'
+Mahzen: GPU rendering — backend=Vulkan, device='NVIDIA GeForce RTX 3070', driver='NVIDIA 615.78.08'
 ```
 
 If Vulkan isn't available, wgpu transparently falls back to an OpenGL backend.
@@ -204,7 +204,7 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   each copy serves a data source), which the vendored egui-winit consults after its
   built-in backends fail.
 - **Single instance** — only one copy runs at a time; a per-user Unix socket
-  (`$XDG_RUNTIME_DIR/encrypted-note.sock`) is bound at startup, and a second
+  (`$XDG_RUNTIME_DIR/mahzen.sock`) is bound at startup, and a second
   launch prints a message and exits instead of opening another window.
 
 ## Obsidian-parity features
@@ -329,7 +329,7 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   folder, copies every `.md` and attachment into the vault and encrypts it
   there. It is **additive and non-destructive**: the source folder is never
   modified, and name clashes become `Note (1).md`. Already-encrypted notes are
-  decrypted first, so importing an Encrypted Note vault works too.
+  decrypted first, so importing an Mahzen vault works too.
 - **HTML / PDF / print export** — *Export current note (PDF / HTML / print)…*
   writes a self-contained HTML file (styled, with tables, code, callouts,
   highlights and images) and opens it in the browser for printing or "Save as
@@ -394,7 +394,7 @@ to `mmdc`.
 
 ## Logo
 
-<p align="center"><img src="assets/logo.svg" width="96" alt="Encrypted Note logo"></p>
+<p align="center"><img src="assets/logo.svg" width="96" alt="Mahzen logo"></p>
 
 The app logo lives at `assets/logo.svg` — a rounded violet-gradient tile with a
 note and a lock. It's shown on the welcome and password screens and set as the
@@ -404,12 +404,12 @@ window icon at startup (via `resvg`).
 resolve an app's icon from the `.desktop` file whose name matches the window's
 **app id**. On launch the app installs, idempotently, into `~/.local/share`:
 
-- `applications/encrypted-note.desktop` (with `Icon=encrypted-note` and
-  `StartupWMClass=encrypted-note`)
-- `icons/hicolor/scalable/apps/encrypted-note.svg`
+- `applications/mahzen.desktop` (with `Icon=mahzen` and
+  `StartupWMClass=mahzen`)
+- `icons/hicolor/scalable/apps/mahzen.svg`
 
 so panels can show the logo. If your panel was already running, refresh its cache
-(e.g. re-login, or run `kbuildsycoca6` on KDE). `packaging/encrypted-note.desktop`
+(e.g. re-login, or run `kbuildsycoca6` on KDE). `packaging/mahzen.desktop`
 is provided for a system-wide `pacman` install too.
 
 ## Theme
@@ -497,7 +497,8 @@ remembered in `media-layout.json`.
 Playback uses the `ffmpeg` / `ffprobe` / `pw-cat` (or `aplay`) programs found
 on `PATH`; nothing is linked into the binary, and only one item plays at a time
 (playback stops on its own when you navigate away from the note or lock the
-vault). *(Attachments are stored unencrypted so they can be played/rendered.)*
+vault). Attachments are **encrypted at rest** like notes; only a short-lived
+decrypted copy in the runtime dir is handed to `ffmpeg`/`pdftoppm`.
 
 ## RSS reader
 
@@ -526,51 +527,7 @@ A built-in feed reader (the **RSS** toolbar button, or the *RSS feeds* palette c
 - Articles are always listed **newest first** (dates are parsed from RSS/Atom).
 - **Global search** — the search box matches titles and text across **all** feeds.
 - Feeds, categories, and cached articles persist in
-  `$XDG_CONFIG_HOME/encrypted-note/feeds.json`.
-
-## Password manager
-
-A built-in password manager, opened from the **shield icon** in the toolbar
-(right of the RSS icon) or the *Password manager* palette command. It is
-**encrypted at rest with the same vault key** (AES-256-GCM) — the store lives in
-`$XDG_CONFIG_HOME/encrypted-note/passwords.enc` and is only decrypted while the
-vault is unlocked (locking the vault wipes it from memory).
-
-- **Entries** hold a title, an optional **icon**, username, password, website,
-  **folder**, free-form notes, and an optional **TOTP secret**.
-- **Icons** — pick an **emoji**, or paste a **favicon image URL** (e.g.
-  `https://youtube.com/favicon.ico`); the image is fetched in the background and
-  shown **live** as you type (PNG / JPEG / GIF / ICO / SVG), in the list and the
-  detail header.
-- **Add / edit / delete** entries; editing shows a live **strength meter** with an
-  **entropy estimate** (in bits) and a one-click **password generator**; a dice
-  icon fills the username with a random, friendly one (e.g. `brave_otter42`).
-  Hover an entry row (in the tree) to show **edit** / **delete** icons, like the
-  folders.
-- **Folders** — the sidebar is a **tree**: each folder row has a chevron, and
-  clicking it **expands the folder to show its entries nested underneath** (like
-  the notes/sub-notes tree). Uncategorized entries live under their own node.
-  Create folders from the sidebar (or inline in the editor) and file entries into
-  them; hover a folder to **rename** or **delete** it (deleting moves its entries to
-  Uncategorized). Folders persist even when empty. Searching auto-expands matching
-  folders.
-- **Copy** the username, password, website, or a live **2FA code** to the
-  clipboard; **reveal / hide** passwords with the eye toggle.
-- **Two-factor codes** are generated in-app from a base32 secret (a from-scratch
-  HMAC-SHA1 / RFC 6238 implementation), showing the **current and next code** with
-  a countdown to the next window.
-- **Search** across all fields, **filter by folder**, and mark entries as
-  **favorites**; a header shows how many entries are favorites and how many have
-  **weak** passwords.
-- **Password generator** — choose length (8–128) and character classes, with a
-  live strength read-out, entropy, and one-click copy.
-- **Encrypted import / export** — the transfer icon opens a dialog that asks for a
-  **password** (enforcing the same rules as the master password) and writes the
-  store as an **AES-256-GCM backup with an Argon2id key** from that password; the
-  same field decrypts a backup on import. Import also still reads plaintext JSON,
-  a JSON array of entries (tolerant of common field names such as
-  `name`/`login`/`pass`/`website`), a `{ "Title": "secret" }` map of TOTP
-  secrets, or a single `otpauth://` URI.
+  `$XDG_CONFIG_HOME/mahzen/feeds.json`.
 
 ## Icons & UX
 
@@ -602,9 +559,9 @@ Build and install:
 
 ```sh
 cargo build --release
-sudo install -Dm755 target/release/encrypted-note /usr/local/bin/encrypted-note
-sudo install -Dm644 packaging/encrypted-note.desktop \
-    /usr/local/share/applications/encrypted-note.desktop
+sudo install -Dm755 target/release/mahzen /usr/local/bin/mahzen
+sudo install -Dm644 packaging/mahzen.desktop \
+    /usr/local/share/applications/mahzen.desktop
 ```
 
 The app also installs a per-user desktop entry and icon into
@@ -653,10 +610,9 @@ Beyond the AES-256-GCM / Argon2id encryption, the code was audited and hardened:
 - **Path confinement** — media/attachment paths taken from note text are resolved
   with `vault_file()`, which rejects absolute paths and `..`, canonicalises, and
   requires the result to stay inside the vault (defeats symlink traversal).
-- **Sensitive files are `0600`** — the keyfile and the encrypted password store
-  (and encrypted exports) are owner-only.
-- **Unbiased randomness** — password generation uses rejection sampling
-  (`crypto::random_below`) rather than `% n`, so there is no modulo bias.
+- **Sensitive files are `0600`** — the keyfile is owner-only.
+- **Unbiased randomness** — the master-password generator uses rejection
+  sampling (`crypto::random_below`) rather than `% n`, so there is no modulo bias.
 - **Single-instance lock** lives in `$XDG_RUNTIME_DIR` (or the per-user config dir),
   never a world-writable `/tmp` path.
 - **Link handlers are scheme-restricted** (`http`/`https`/`mailto` only); XML is
@@ -685,17 +641,16 @@ Beyond the AES-256-GCM / Argon2id encryption, the code was audited and hardened:
 
 ## Where things are stored
 
-- Config and lockout state: `$XDG_CONFIG_HOME/encrypted-note/config.json`
-- Keyfile (salt + password verifier): `$XDG_CONFIG_HOME/encrypted-note/keyfile.json`
+- Config and lockout state: `$XDG_CONFIG_HOME/mahzen/config.json`
+- Keyfile (salt + password verifier): `$XDG_CONFIG_HOME/mahzen/keyfile.json`
   (written with `0600` permissions)
-- Password manager (encrypted): `$XDG_CONFIG_HOME/encrypted-note/passwords.enc`
-- RSS feeds and saved articles: `$XDG_CONFIG_HOME/encrypted-note/feeds.json`
-- Media playback volume + image layout: `$XDG_CONFIG_HOME/encrypted-note/media-layout.json`
+- RSS feeds and saved articles: `$XDG_CONFIG_HOME/mahzen/feeds.json`
+- Media playback volume + image layout: `$XDG_CONFIG_HOME/mahzen/media-layout.json`
 - Your notes: wherever your vault folder is, as encrypted `.md` files
 - Attachments: `<vault>/assets/`, referenced from notes
-- Single-instance socket: `$XDG_RUNTIME_DIR/encrypted-note.sock`
-- Installed desktop entry + icon: `$XDG_DATA_HOME/applications/encrypted-note.desktop`
-  and `$XDG_DATA_HOME/icons/hicolor/scalable/apps/encrypted-note.svg`
+- Single-instance socket: `$XDG_RUNTIME_DIR/mahzen.sock`
+- Installed desktop entry + icon: `$XDG_DATA_HOME/applications/mahzen.desktop`
+  and `$XDG_DATA_HOME/icons/hicolor/scalable/apps/mahzen.svg`
 
 `$XDG_CONFIG_HOME`, `$XDG_DATA_HOME`, and `$XDG_RUNTIME_DIR` fall back to
 `~/.config`, `~/.local/share`, and the temp dir respectively.
@@ -724,14 +679,13 @@ src/
   config.rs     persisted configuration, lockout, and workspace state
   desktop.rs    installs the desktop entry + icon for panel/taskbar display
   feeds.rs      RSS/Atom reader: fetch, parse, and article extraction
-  passwords.rs  password manager: entries, generator, strength, TOTP
   media.rs      in-app audio/video playback and image layout
   system_clipboard.rs  ext-data-control clipboard bridge (KWin cross-app copy/paste)
 assets/
   logo.svg      app logo (welcome screen, window icon, installed icon)
   icons/*.svg   the icon set
 packaging/
-  encrypted-note.desktop  system-wide desktop entry
+  mahzen.desktop  system-wide desktop entry
 vendor/
   egui-winit/   patched egui-winit (clipboard fallback for KWin)
 ```

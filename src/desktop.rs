@@ -15,7 +15,7 @@ use std::fs;
 use std::path::PathBuf;
 
 /// Must match the window app id set in `main.rs` (`with_app_id`).
-const APP_ID: &str = "encrypted-note";
+const APP_ID: &str = "mahzen";
 
 fn data_home() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
@@ -27,7 +27,7 @@ fn desktop_entry(exec: &str) -> String {
     format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=Encrypted Note\n\
+         Name=Mahzen\n\
          GenericName=Markdown Notes\n\
          Comment=A native, Obsidian-like markdown note taking app with AES-256 encryption\n\
          Exec=\"{exec}\" %F\n\

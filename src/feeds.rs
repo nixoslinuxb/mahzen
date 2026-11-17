@@ -5,7 +5,7 @@
 //! * `fetch` downloads a feed with the system `curl` (no HTTP crate needed) and
 //!   parses it.
 //! * [`Store`] persists feeds, categories, and cached items to
-//!   `$XDG_CONFIG_HOME/encrypted-note/feeds.json`.
+//!   `$XDG_CONFIG_HOME/mahzen/feeds.json`.
 
 use std::path::PathBuf;
 

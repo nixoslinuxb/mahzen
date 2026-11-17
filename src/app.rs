@@ -18,7 +18,6 @@ use crate::index::{self, NoteIndex};
 use crate::markdown;
 use crate::media;
 use crate::palette;
-use crate::passwords;
 use crate::portability;
 use crate::query;
 use crate::search;
@@ -28,8 +27,6 @@ use crate::vim;
 
 /// Refresh results from a background feed fetch.
 type FeedRx = mpsc::Receiver<(u32, Result<(String, Vec<feeds::Item>), String>)>;
-/// Results from a background favicon fetch (url, bytes).
-type FaviconRx = mpsc::Receiver<(String, Result<Vec<u8>, String>)>;
 /// Results from a background web-card metadata fetch (url, (title, description)).
 type WebMetaRx = mpsc::Receiver<(String, Result<(String, String), String>)>;
 
@@ -56,35 +53,6 @@ enum Transport {
     Toggle,
     Stop,
     Seek(f32),
-}
-
-/// An entry being added or edited in the password manager.
-struct PwEditor {
-    draft: passwords::Entry,
-    is_new: bool,
-    show: bool,
-    /// Whether the inline "new folder" field is showing.
-    new_folder: bool,
-    new_folder_name: String,
-}
-
-/// Actions requested by the password detail view, applied after the UI closure.
-#[derive(Default)]
-struct PwActions {
-    fav: bool,
-    edit: bool,
-    del: bool,
-    toggle_reveal: bool,
-    copy: Option<(&'static str, String)>,
-    open_url: Option<String>,
-}
-
-/// The action chosen on a credential row in the password tree.
-#[derive(Clone, Copy)]
-enum PwRowAction {
-    Select,
-    Edit,
-    Delete,
 }
 
 impl AttachKind {
@@ -330,7 +298,6 @@ enum Command {
     NewCanvas,
     OpenCanvas,
     OpenFeeds,
-    OpenPasswords,
     Undo,
     Redo,
     WindowMode,
@@ -364,7 +331,7 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 42] = [
+    const ALL: [Command; 41] = [
         Command::NewNote,
         Command::NewSubnote,
         Command::OpenVault,
@@ -376,7 +343,6 @@ impl Command {
         Command::NewCanvas,
         Command::OpenCanvas,
         Command::OpenFeeds,
-        Command::OpenPasswords,
         Command::Undo,
         Command::Redo,
         Command::WindowMode,
@@ -422,7 +388,6 @@ impl Command {
             Command::NewCanvas => crate::tr!("New canvas"),
             Command::OpenCanvas => crate::tr!("Open canvas board"),
             Command::OpenFeeds => crate::tr!("RSS feeds"),
-            Command::OpenPasswords => crate::tr!("Password manager"),
             Command::Undo => crate::tr!("Undo"),
             Command::Redo => crate::tr!("Redo"),
             Command::WindowMode => crate::tr!("Cycle window mode (F11)"),
@@ -469,7 +434,6 @@ impl Command {
             Command::NewCanvas => Icon::Add,
             Command::OpenCanvas => Icon::Graph,
             Command::OpenFeeds => Icon::Rss,
-            Command::OpenPasswords => Icon::Passwords,
             Command::Undo => Icon::Undo,
             Command::Redo => Icon::Redo,
             Command::WindowMode => Icon::PanelRight,
@@ -808,54 +772,6 @@ pub struct EncryptedNoteApp {
     /// Decoded note images, keyed by path (path → GPU texture).
     media_textures: HashMap<PathBuf, egui::TextureHandle>,
 
-    // Password manager.
-    passwords_open: bool,
-    passwords: passwords::Store,
-    pw_sel: Option<u64>,
-    pw_search: String,
-    /// `None` = all categories; `Some("")` = uncategorized.
-    pw_category: Option<String>,
-    pw_fav_only: bool,
-    /// Folders (and `""` for Uncategorized) that are expanded in the tree.
-    pw_expanded: HashSet<String>,
-    /// Entry ids whose password is currently revealed.
-    pw_reveal: HashSet<u64>,
-    /// Entry currently being added/edited.
-    pw_editor: Option<PwEditor>,
-    /// Entry awaiting delete confirmation.
-    pw_confirm_delete: Option<u64>,
-    /// Password-generator popup state.
-    pw_gen_open: bool,
-    pw_gen_len: usize,
-    pw_gen_upper: bool,
-    pw_gen_lower: bool,
-    pw_gen_digits: bool,
-    pw_gen_special: bool,
-    /// The most recently generated password.
-    pw_gen_value: String,
-    /// Password import/export dialog.
-    pw_io_open: bool,
-    /// File path used by the import/export dialog.
-    pw_io_path: String,
-    /// Password used to encrypt (export) or decrypt (import) the file.
-    pw_io_password: String,
-    /// Validation message for the import/export dialog.
-    pw_io_error: Option<String>,
-    /// "New folder" dialog.
-    pw_new_folder_open: bool,
-    pw_new_folder_name: String,
-    /// Folder being renamed (and its draft name).
-    pw_folder_rename: Option<String>,
-    pw_folder_rename_name: String,
-    /// Folder awaiting delete confirmation.
-    pw_folder_delete: Option<String>,
-    /// Favicon (icon-from-URL) support for password entries.
-    favicon_rx: Option<FaviconRx>,
-    favicon_tex: HashMap<String, egui::TextureHandle>,
-    favicon_url: String,
-    favicon_last: String,
-    favicon_change_at: f64,
-    favicon_error: Option<String>,
     /// Whether the unlock screen's password field is revealed.
     gate_show: bool,
 
@@ -1057,38 +973,6 @@ impl EncryptedNoteApp {
             player_rendered: false,
             media_layout: media::Layouts::load(),
             media_textures: HashMap::new(),
-            passwords_open: false,
-            passwords: passwords::Store::default(),
-            pw_sel: None,
-            pw_search: String::new(),
-            pw_category: None,
-            pw_fav_only: false,
-            pw_expanded: HashSet::new(),
-            pw_reveal: HashSet::new(),
-            pw_editor: None,
-            pw_confirm_delete: None,
-            pw_gen_open: false,
-            pw_gen_len: 20,
-            pw_gen_upper: true,
-            pw_gen_lower: true,
-            pw_gen_digits: true,
-            pw_gen_special: true,
-            pw_gen_value: String::new(),
-            pw_io_open: false,
-            pw_io_path: default_export_path(),
-            pw_io_password: String::new(),
-            pw_io_error: None,
-            pw_new_folder_open: false,
-            pw_new_folder_name: String::new(),
-            pw_folder_rename: None,
-            pw_folder_rename_name: String::new(),
-            pw_folder_delete: None,
-            favicon_rx: None,
-            favicon_tex: HashMap::new(),
-            favicon_url: String::new(),
-            favicon_last: String::new(),
-            favicon_change_at: 0.0,
-            favicon_error: None,
             gate_show: false,
             show_right: initial_show_right,
             backlinks: Vec::new(),
@@ -1169,7 +1053,7 @@ impl EncryptedNoteApp {
         let cache = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(config::dir)
-            .join("encrypted-note-media");
+            .join("mahzen-media");
         let _ = fs::create_dir_all(&cache);
         let mut h = std::collections::hash_map::DefaultHasher::new();
         path.to_string_lossy().hash(&mut h);
@@ -2957,7 +2841,6 @@ impl EncryptedNoteApp {
             }
             Command::OpenCanvas => self.open_canvas(),
             Command::OpenFeeds => self.feeds_open = true,
-            Command::OpenPasswords => self.open_passwords(),
             Command::Undo => self.undo(),
             Command::Redo => self.redo(),
             Command::WindowMode => {
@@ -5451,7 +5334,7 @@ impl EncryptedNoteApp {
                     Some(tex) => tex.set(image, egui::TextureOptions::LINEAR),
                     None => {
                         *player_tex = Some(ctx.load_texture(
-                            "encrypted-note-video",
+                            "mahzen-video",
                             image,
                             egui::TextureOptions::LINEAR,
                         ))
@@ -5469,7 +5352,7 @@ impl EncryptedNoteApp {
         let cache = std::env::var_os("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(config::dir)
-            .join("encrypted-note-media");
+            .join("mahzen-media");
         let _ = fs::remove_dir_all(cache);
     }
 
@@ -5478,12 +5361,6 @@ impl EncryptedNoteApp {
         self.stop_media();
         self.clear_media_cache();
         // Clear decrypted secrets from memory.
-        self.passwords_open = false;
-        self.passwords = passwords::Store::default();
-        self.pw_editor = None;
-        self.pw_sel = None;
-        self.pw_reveal.clear();
-        self.pw_gen_value.clear();
         self.media_textures.clear();
         self.crypto = None;
         self.tabs.clear();
@@ -5658,7 +5535,7 @@ impl EncryptedNoteApp {
                     ui.add_space(14.0);
                     ui.label(
                         RichText::new(
-                            "Store this password somewhere safe right now — a password manager, \
+                            "Store this password somewhere safe right now — a notebook, \
                              or written down and kept secure. It is the only key to your notes.",
                         )
                         .size(14.0),
@@ -5753,7 +5630,7 @@ impl EncryptedNoteApp {
                             egui::Image::new(egui::include_image!("../assets/logo.svg")),
                         );
                         ui.add_space(12.0);
-                        ui.label(RichText::new(crate::tr!("Encrypted Note")).size(28.0).strong());
+                        ui.label(RichText::new("Mahzen").size(28.0).strong());
                         ui.add_space(2.0);
                         ui.label(RichText::new(crate::tr!("AES-256 encrypted markdown vault")).weak());
                     });
@@ -6072,1485 +5949,6 @@ impl EncryptedNoteApp {
         self.status = "Everything erased. Create a new password to start an empty vault.".into();
     }
 
-    // ---------------------------------------------------- password manager
-
-    /// Open or close the password manager.
-    fn toggle_passwords(&mut self) {
-        if self.passwords_open {
-            self.passwords_open = false;
-        } else {
-            self.open_passwords();
-        }
-    }
-
-    fn open_passwords(&mut self) {
-        self.passwords = self.load_passwords();
-        self.passwords_open = true;
-        self.pw_sel = None;
-        self.pw_search.clear();
-        self.pw_category = None;
-        self.pw_expanded.clear();
-    }
-
-    /// Decrypt and load the password store (empty if none exists yet).
-    fn load_passwords(&self) -> passwords::Store {
-        let Ok(bytes) = Vault::read_bytes(&passwords::store_path()) else {
-            return passwords::Store::default();
-        };
-        let json = if crypto::is_encrypted(&bytes) {
-            match self.crypto.as_ref().and_then(|c| c.decrypt(&bytes)) {
-                Some(j) => j,
-                None => return passwords::Store::default(),
-            }
-        } else {
-            match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(_) => return passwords::Store::default(),
-            }
-        };
-        serde_json::from_str(&json).unwrap_or_default()
-    }
-
-    /// Encrypt and persist the password store.
-    fn save_passwords(&self) {
-        let Some(crypto) = self.crypto.as_ref() else {
-            return;
-        };
-        if let Ok(json) = serde_json::to_string_pretty(&self.passwords) {
-            let path = passwords::store_path();
-            let _ = Vault::write_bytes(&path, &crypto.encrypt(&json));
-            restrict_permissions(&path);
-        }
-    }
-
-    /// Start a fresh entry in the editor.
-    fn pw_new(&mut self) {
-        self.pw_editor = Some(PwEditor {
-            draft: passwords::Entry::default(),
-            is_new: true,
-            show: true,
-            new_folder: false,
-            new_folder_name: String::new(),
-        });
-        self.favicon_url.clear();
-        self.favicon_error = None;
-    }
-
-    /// Kick off a background fetch of a favicon URL.
-    fn start_favicon_fetch(&mut self, url: &str) {
-        if self.favicon_rx.is_some() {
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        self.favicon_rx = Some(rx);
-        self.favicon_error = None;
-        let url = url.to_string();
-        std::thread::spawn(move || {
-            let res = feeds::http_get(&url);
-            let _ = tx.send((url, res));
-        });
-    }
-
-    /// Poll favicon fetches and, after a short pause, fetch a newly-pasted URL.
-    fn tick_favicon(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.favicon_rx {
-            match rx.try_recv() {
-                Ok((url, res)) => {
-                    match res {
-                        Ok(bytes) => match decode_image_bytes(&bytes) {
-                            Some(img) => {
-                                let tex = ctx.load_texture(
-                                    format!("favicon:{url}"),
-                                    img,
-                                    egui::TextureOptions::LINEAR,
-                                );
-                                self.favicon_tex.insert(url, tex);
-                                self.favicon_error = None;
-                            }
-                            None => {
-                                self.favicon_error = Some("Could not decode that image".into());
-                            }
-                        },
-                        Err(e) => self.favicon_error = Some(format!("Fetch failed: {e}")),
-                    }
-                    self.favicon_rx = None;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => self.favicon_rx = None,
-            }
-        }
-
-        let url = self.favicon_url.trim().to_string();
-        let now = ctx.input(|i| i.time);
-        if url != self.favicon_last {
-            self.favicon_last = url;
-            self.favicon_change_at = now;
-        } else if !self.favicon_last.is_empty()
-            && !self.favicon_tex.contains_key(&self.favicon_last)
-            && self.favicon_rx.is_none()
-            && now - self.favicon_change_at > 0.6
-            && self.favicon_last.starts_with("http")
-        {
-            let url = self.favicon_last.clone();
-            self.start_favicon_fetch(&url);
-        }
-
-        if self.favicon_rx.is_some() {
-            ctx.request_repaint();
-        }
-    }
-
-    fn passwords_ui(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Passwords, 16.0, theme::ACCENT);
-            ui.label(RichText::new("Passwords").strong());
-            ui.separator();
-            if icons::button(ui, Icon::Add, 16.0, true, false, "New entry").clicked() {
-                self.pw_new();
-            }
-            if icons::button(ui, Icon::Generate, 16.0, true, false, "Password generator").clicked()
-            {
-                self.pw_gen_open = true;
-                self.pw_gen_value = passwords::generate(
-                    self.pw_gen_len,
-                    self.pw_gen_upper,
-                    self.pw_gen_lower,
-                    self.pw_gen_digits,
-                    self.pw_gen_special,
-                );
-            }
-            if icons::button(ui, Icon::Upload, 16.0, true, false, "Import / export JSON").clicked()
-            {
-                self.pw_io_open = true;
-            }
-            ui.separator();
-            icons::icon(ui, Icon::Search, 14.0, ui.visuals().weak_text_color());
-            ui.add(
-                egui::TextEdit::singleline(&mut self.pw_search)
-                    .hint_text("search entries…")
-                    .desired_width(220.0),
-            );
-            if !self.pw_search.is_empty()
-                && icons::button(ui, Icon::Close, 14.0, true, false, "Clear search").clicked()
-            {
-                self.pw_search.clear();
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::Close, 16.0, true, false, "Close passwords").clicked() {
-                    self.passwords_open = false;
-                }
-                ui.weak(format!(
-                    "{} entr{}",
-                    self.passwords.entries.len(),
-                    if self.passwords.entries.len() == 1 {
-                        "y"
-                    } else {
-                        "ies"
-                    }
-                ));
-            });
-        });
-        ui.separator();
-
-        egui::SidePanel::left("pw_list")
-            .resizable(true)
-            .default_width(280.0)
-            .show_inside(ui, |ui| self.pw_list_ui(ui));
-        self.pw_detail_ui(ui);
-
-        self.pw_editor_ui(&ctx);
-        self.pw_generator_ui(&ctx);
-        self.pw_io_ui(&ctx);
-        self.pw_new_folder_ui(&ctx);
-        self.pw_folder_dialog_ui(&ctx);
-        self.pw_delete_confirm_ui(&ctx);
-    }
-
-    fn pw_list_ui(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
-        let total = self.passwords.entries.len();
-        let favs = self.passwords.entries.iter().filter(|e| e.favorite).count();
-        let weak = self.passwords.weakest();
-        ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Star, 13.0, theme::ACCENT);
-            ui.weak(format!("{favs} favorite · {weak} weak of {total}"));
-        });
-        ui.horizontal(|ui| {
-            let fav_sel = self.pw_fav_only;
-            if icons::button(ui, Icon::Star, 14.0, true, fav_sel, "Favorites only").clicked() {
-                self.pw_fav_only = !self.pw_fav_only;
-            }
-            ui.label(RichText::new("Favorites only").small());
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(
-                    ui,
-                    Icon::FolderPlus,
-                    14.0,
-                    true,
-                    false,
-                    crate::tr!("New folder"),
-                )
-                .clicked()
-                {
-                    self.pw_new_folder_open = true;
-                    self.pw_new_folder_name.clear();
-                }
-            });
-        });
-        ui.separator();
-
-        let query = self.pw_search.clone();
-        let fav_only = self.pw_fav_only;
-        let searching = !query.trim().is_empty() || fav_only;
-        let folders = self.passwords.all_folders();
-        let uncat = self.passwords.filtered(&query, Some(""), fav_only);
-
-        let mut select: Option<u64> = None;
-        let mut edit: Option<u64> = None;
-        let mut del_entry: Option<u64> = None;
-        let mut toggle: Option<String> = None;
-        let mut rename: Option<String> = None;
-        let mut delete: Option<String> = None;
-        let mut shown_any = false;
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                for f in &folders {
-                    let ids = self.passwords.filtered(&query, Some(f.as_str()), fav_only);
-                    // While searching, hide folders with no matches.
-                    if searching && ids.is_empty() {
-                        continue;
-                    }
-                    let expanded = searching || self.pw_expanded.contains(f);
-                    let sel = self.pw_category.as_deref() == Some(f.as_str());
-                    let row = egui::Rect::from_min_size(
-                        ui.next_widget_position(),
-                        egui::vec2(ui.available_width(), 20.0),
-                    );
-                    let hovered = ui
-                        .input(|i| i.pointer.hover_pos())
-                        .is_some_and(|p| row.contains(p));
-                    ui.horizontal(|ui| {
-                        let chev = if expanded {
-                            Icon::ChevronDown
-                        } else {
-                            Icon::ChevronRight
-                        };
-                        if icons::button(ui, chev, 14.0, true, false, "Expand / collapse").clicked()
-                        {
-                            toggle = Some(f.clone());
-                        }
-                        icons::icon(
-                            ui,
-                            Icon::Folder,
-                            13.0,
-                            if sel {
-                                theme::ACCENT
-                            } else {
-                                ui.visuals().weak_text_color()
-                            },
-                        );
-                        if ui
-                            .selectable_label(sel, RichText::new(f).strong())
-                            .clicked()
-                        {
-                            toggle = Some(f.clone());
-                        }
-                        if hovered {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if icons::button(
-                                        ui,
-                                        Icon::Trash,
-                                        13.0,
-                                        true,
-                                        false,
-                                        "Delete folder",
-                                    )
-                                    .clicked()
-                                    {
-                                        delete = Some(f.clone());
-                                    }
-                                    if icons::button(
-                                        ui,
-                                        Icon::Edit,
-                                        13.0,
-                                        true,
-                                        false,
-                                        "Rename folder",
-                                    )
-                                    .clicked()
-                                    {
-                                        rename = Some(f.clone());
-                                    }
-                                },
-                            );
-                        }
-                    });
-                    shown_any = true;
-                    if expanded {
-                        ui.indent(("pw_folder", f.as_str()), |ui| {
-                            if ids.is_empty() {
-                                ui.label(RichText::new("(empty)").weak().small());
-                            }
-                            for id in ids {
-                                match self.pw_entry_row(ui, id) {
-                                    Some(PwRowAction::Select) => select = Some(id),
-                                    Some(PwRowAction::Edit) => edit = Some(id),
-                                    Some(PwRowAction::Delete) => del_entry = Some(id),
-                                    None => {}
-                                }
-                            }
-                        });
-                    }
-                }
-
-                // Uncategorized entries as their own node.
-                if !uncat.is_empty() {
-                    let expanded = searching || self.pw_expanded.contains("");
-                    let sel = self.pw_category.as_deref() == Some("");
-                    ui.horizontal(|ui| {
-                        let chev = if expanded {
-                            Icon::ChevronDown
-                        } else {
-                            Icon::ChevronRight
-                        };
-                        if icons::button(ui, chev, 14.0, true, false, "Expand / collapse").clicked()
-                        {
-                            toggle = Some(String::new());
-                        }
-                        icons::icon(
-                            ui,
-                            Icon::Folder,
-                            13.0,
-                            if sel {
-                                theme::ACCENT
-                            } else {
-                                ui.visuals().weak_text_color()
-                            },
-                        );
-                        if ui
-                            .selectable_label(
-                                sel,
-                                RichText::new(crate::tr!("Uncategorized")).strong(),
-                            )
-                            .clicked()
-                        {
-                            toggle = Some(String::new());
-                        }
-                    });
-                    shown_any = true;
-                    if expanded {
-                        ui.indent("pw_uncat", |ui| {
-                            for id in uncat {
-                                match self.pw_entry_row(ui, id) {
-                                    Some(PwRowAction::Select) => select = Some(id),
-                                    Some(PwRowAction::Edit) => edit = Some(id),
-                                    Some(PwRowAction::Delete) => del_entry = Some(id),
-                                    None => {}
-                                }
-                            }
-                        });
-                    }
-                }
-
-                if !shown_any {
-                    ui.add_space(8.0);
-                    ui.weak("No matching entries. Press ＋ to add one.");
-                }
-            });
-
-        if let Some(f) = toggle {
-            if self.pw_expanded.contains(&f) {
-                self.pw_expanded.remove(&f);
-            } else {
-                self.pw_expanded.insert(f.clone());
-            }
-            self.pw_category = Some(f);
-        }
-        if let Some(id) = select {
-            self.pw_sel = Some(id);
-        }
-        if let Some(id) = edit {
-            if let Some(entry) = self.passwords.get(id).cloned() {
-                self.favicon_url = entry.favicon.clone();
-                self.favicon_error = None;
-                self.pw_editor = Some(PwEditor {
-                    draft: entry,
-                    is_new: false,
-                    show: false,
-                    new_folder: false,
-                    new_folder_name: String::new(),
-                });
-            }
-        }
-        if let Some(id) = del_entry {
-            self.pw_confirm_delete = Some(id);
-        }
-        if let Some(f) = rename {
-            self.pw_folder_rename_name = f.clone();
-            self.pw_folder_rename = Some(f);
-        }
-        if let Some(f) = delete {
-            self.pw_folder_delete = Some(f);
-        }
-    }
-
-    /// One credential row inside the folder tree. Returns the chosen action.
-    fn pw_entry_row(&mut self, ui: &mut egui::Ui, id: u64) -> Option<PwRowAction> {
-        let e = self.passwords.get(id)?;
-        let title = if e.title.trim().is_empty() {
-            "(untitled)".to_string()
-        } else {
-            e.title.clone()
-        };
-        let user = e.username.clone();
-        let cat = e.category.clone();
-        let icon = e.icon.clone();
-        let fav_tex = self.favicon_tex.get(e.favicon.trim()).cloned();
-        let fav = e.favorite;
-        let sel = self.pw_sel == Some(id);
-        let row = egui::Rect::from_min_size(
-            ui.next_widget_position(),
-            egui::vec2(ui.available_width(), 20.0),
-        );
-        let hovered = ui
-            .input(|i| i.pointer.hover_pos())
-            .is_some_and(|p| row.contains(p));
-        let mut action = None;
-        ui.horizontal(|ui| {
-            if let Some(t) = &fav_tex {
-                draw_tex(ui, t, 15.0);
-            } else if icon.trim().is_empty() {
-                icons::icon(
-                    ui,
-                    Icon::Passwords,
-                    13.0,
-                    if sel {
-                        theme::ACCENT
-                    } else {
-                        ui.visuals().weak_text_color()
-                    },
-                );
-            } else {
-                ui.label(RichText::new(icon.clone()).size(15.0));
-            }
-            let clicked = ui
-                .vertical(|ui| {
-                    if ui
-                        .selectable_label(sel, RichText::new(&title).strong())
-                        .clicked()
-                    {
-                        return true;
-                    }
-                    let sub = if user.trim().is_empty() {
-                        cat.clone()
-                    } else {
-                        user.clone()
-                    };
-                    if !sub.is_empty() {
-                        ui.label(RichText::new(sub).weak().small());
-                    }
-                    false
-                })
-                .inner;
-            if fav {
-                icons::icon(ui, Icon::Star, 12.0, theme::ACCENT);
-            }
-            if hovered {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Trash, 13.0, true, false, "Delete entry").clicked() {
-                        action = Some(PwRowAction::Delete);
-                    }
-                    if icons::button(ui, Icon::Edit, 13.0, true, false, "Edit entry").clicked() {
-                        action = Some(PwRowAction::Edit);
-                    }
-                });
-            }
-            if clicked {
-                action = Some(PwRowAction::Select);
-            }
-        });
-        action
-    }
-
-    fn pw_detail_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(id) = self.pw_sel else {
-            ui.vertical_centered(|ui| {
-                ui.add_space(60.0);
-                icons::icon(ui, Icon::Passwords, 30.0, ui.visuals().weak_text_color());
-                ui.label(RichText::new("Select an entry or create a new one").weak());
-                if icons::button(ui, Icon::Add, 22.0, true, false, "New entry").clicked() {
-                    self.pw_new();
-                }
-            });
-            return;
-        };
-        let Some(entry) = self.passwords.get(id).cloned() else {
-            self.pw_sel = None;
-            return;
-        };
-        let revealed = self.pw_reveal.contains(&id);
-        let mut act = PwActions::default();
-        let now = passwords::now_unix();
-        let fav_tex = self.favicon_tex.get(entry.favicon.trim()).cloned();
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if let Some(t) = &fav_tex {
-                        draw_tex(ui, t, 24.0);
-                    } else if !entry.icon.trim().is_empty() {
-                        ui.label(RichText::new(entry.icon.clone()).size(24.0));
-                    }
-                    ui.label(
-                        RichText::new(if entry.title.trim().is_empty() {
-                            "(untitled)"
-                        } else {
-                            &entry.title
-                        })
-                        .size(22.0)
-                        .strong(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Trash, 18.0, true, false, crate::tr!("Delete"))
-                            .clicked()
-                        {
-                            act.del = true;
-                        }
-                        if icons::button(ui, Icon::Edit, 18.0, true, false, crate::tr!("Edit"))
-                            .clicked()
-                        {
-                            act.edit = true;
-                        }
-                        if icons::button(ui, Icon::Star, 18.0, true, entry.favorite, "Favorite")
-                            .clicked()
-                        {
-                            act.fav = true;
-                        }
-                    });
-                });
-                ui.horizontal(|ui| {
-                    if !entry.category.trim().is_empty() {
-                        pw_chip(ui, &entry.category);
-                    }
-                    ui.label(
-                        RichText::new(format!("Updated {}", passwords::fmt_day(entry.updated)))
-                            .weak()
-                            .small(),
-                    );
-                });
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(6.0);
-
-                if pw_copy_row(ui, "Username", &entry.username) {
-                    act.copy = Some(("username", entry.username.clone()));
-                }
-
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Password").small().weak());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(
-                            ui,
-                            Icon::Copy,
-                            15.0,
-                            !entry.password.is_empty(),
-                            false,
-                            "Copy password",
-                        )
-                        .clicked()
-                        {
-                            act.copy = Some(("password", entry.password.clone()));
-                        }
-                        if icons::button(
-                            ui,
-                            if revealed { Icon::EyeOff } else { Icon::Eye },
-                            15.0,
-                            !entry.password.is_empty(),
-                            revealed,
-                            "Show / hide",
-                        )
-                        .clicked()
-                        {
-                            act.toggle_reveal = true;
-                        }
-                    });
-                });
-                let shown = if entry.password.is_empty() {
-                    "—".to_string()
-                } else if revealed {
-                    entry.password.clone()
-                } else {
-                    "•".repeat(entry.password.chars().count().min(32))
-                };
-                ui.label(RichText::new(shown).monospace());
-                if !entry.password.is_empty() {
-                    let (score, label) = passwords::strength(&entry.password);
-                    pw_strength_bar(ui, score, label, passwords::entropy_bits(&entry.password));
-                }
-
-                if !entry.totp.trim().is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Two-factor code").small().weak());
-                    match passwords::totp(&entry.totp, now) {
-                        Some(code) => {
-                            ui.horizontal(|ui| {
-                                let spaced: String = code
-                                    .chars()
-                                    .enumerate()
-                                    .flat_map(|(i, c)| {
-                                        if i > 0 && i % 3 == 0 {
-                                            vec![' ', c]
-                                        } else {
-                                            vec![c]
-                                        }
-                                    })
-                                    .collect();
-                                ui.label(RichText::new(spaced).size(20.0).monospace().strong());
-                                if icons::button(ui, Icon::Copy, 15.0, true, false, "Copy code")
-                                    .clicked()
-                                {
-                                    act.copy = Some(("code", code.clone()));
-                                }
-                                ui.weak(format!("{}s", passwords::totp_remaining(now)));
-                            });
-                            if let Some(next) = passwords::totp(&entry.totp, now + 30) {
-                                let spaced: String = next
-                                    .chars()
-                                    .enumerate()
-                                    .flat_map(|(i, c)| {
-                                        if i > 0 && i % 3 == 0 {
-                                            vec![' ', c]
-                                        } else {
-                                            vec![c]
-                                        }
-                                    })
-                                    .collect();
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new("Next").small().weak());
-                                    ui.label(RichText::new(spaced).monospace().weak());
-                                });
-                            }
-                        }
-                        None => {
-                            ui.label(RichText::new("Invalid TOTP secret").color(theme::DANGER));
-                        }
-                    }
-                }
-
-                if !entry.url.trim().is_empty() {
-                    ui.add_space(8.0);
-                    if pw_copy_row(ui, "Website", &entry.url) {
-                        act.copy = Some(("URL", entry.url.clone()));
-                    }
-                    if ui
-                        .link(RichText::new(crate::tr!("Open in browser")).color(theme::LINK))
-                        .clicked()
-                    {
-                        act.open_url = Some(entry.url.clone());
-                    }
-                }
-
-                if !entry.notes.trim().is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Notes").small().weak());
-                    ui.label(&entry.notes);
-                }
-
-                ui.add_space(16.0);
-            });
-
-        // Apply actions.
-        if act.toggle_reveal {
-            if revealed {
-                self.pw_reveal.remove(&id);
-            } else {
-                self.pw_reveal.insert(id);
-            }
-        }
-        if act.fav {
-            if let Some(e) = self.passwords.get_mut(id) {
-                e.favorite = !e.favorite;
-                e.updated = now;
-            }
-            self.save_passwords();
-        }
-        if act.edit {
-            self.favicon_url = entry.favicon.clone();
-            self.favicon_error = None;
-            self.pw_editor = Some(PwEditor {
-                draft: entry.clone(),
-                is_new: false,
-                show: revealed,
-                new_folder: false,
-                new_folder_name: String::new(),
-            });
-        }
-        if act.del {
-            self.pw_confirm_delete = Some(id);
-        }
-        if let Some(url) = act.open_url {
-            open_external(&url);
-        }
-        if let Some((what, value)) = act.copy {
-            ui.ctx().copy_text(value);
-            self.status = format!("Copied {what}");
-        }
-
-        // A live TOTP countdown needs a repaint each second.
-        if !entry.totp.trim().is_empty() {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_secs(1));
-        }
-    }
-
-    /// Delete-confirmation dialog (any entry, not just the selected one).
-    fn pw_delete_confirm_ui(&mut self, ctx: &egui::Context) {
-        let Some(id) = self.pw_confirm_delete else {
-            return;
-        };
-        let mut open = true;
-        let mut confirm = false;
-        egui::Window::new("pw_delete")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_width(320.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Warning, 18.0, theme::DANGER);
-                    ui.label(RichText::new("Delete this entry?").strong());
-                });
-                ui.add_space(4.0);
-                ui.weak("This cannot be undone.");
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
-                        .clicked()
-                    {
-                        open = false;
-                    }
-                    if icons::button(ui, Icon::Trash, 18.0, true, false, "Delete entry").clicked() {
-                        confirm = true;
-                    }
-                });
-            });
-        if confirm {
-            self.passwords.remove(id);
-            self.pw_reveal.remove(&id);
-            if self.pw_sel == Some(id) {
-                self.pw_sel = None;
-            }
-            self.pw_confirm_delete = None;
-            self.save_passwords();
-            self.status = "Entry deleted".into();
-        } else if !open {
-            self.pw_confirm_delete = None;
-        }
-    }
-
-    fn pw_editor_ui(&mut self, ctx: &egui::Context) {
-        let Some(mut editor) = self.pw_editor.take() else {
-            return;
-        };
-        let mut keep = true;
-        let mut save = false;
-        let mut cancel = false;
-        let mut use_gen = false;
-        let mut force_favicon = false;
-
-        egui::Window::new("pw_editor")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_width(400.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Passwords, 16.0, theme::ACCENT);
-                    ui.label(
-                        RichText::new(if editor.is_new {
-                            "New password"
-                        } else {
-                            "Edit password"
-                        })
-                        .strong(),
-                    );
-                });
-                ui.separator();
-                pw_field(ui, "Title", &mut editor.draft.title);
-                ui.label(RichText::new("Icon").small().weak());
-                ui.horizontal_wrapped(|ui| {
-                    for ic in PW_ICONS {
-                        let sel = editor.draft.icon == *ic;
-                        if ui
-                            .selectable_label(sel, RichText::new(*ic).size(18.0))
-                            .clicked()
-                        {
-                            editor.draft.icon = if sel {
-                                String::new()
-                            } else {
-                                (*ic).to_string()
-                            };
-                        }
-                    }
-                    if !editor.draft.icon.is_empty()
-                        && icons::button(ui, Icon::Close, 14.0, true, false, "Clear icon").clicked()
-                    {
-                        editor.draft.icon.clear();
-                    }
-                });
-                ui.label(
-                    RichText::new("Icon from a website (paste a favicon image URL)")
-                        .small()
-                        .weak(),
-                );
-                ui.horizontal(|ui| {
-                    let w = ui.available_width() - 30.0;
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.favicon_url)
-                            .hint_text("https://youtube.com/favicon.ico")
-                            .desired_width(w),
-                    );
-                    if icons::button(ui, Icon::Refresh, 16.0, true, false, "Fetch favicon")
-                        .clicked()
-                    {
-                        force_favicon = true;
-                    }
-                });
-                let fav_url = self.favicon_url.trim().to_string();
-                if let Some(tex) = self.favicon_tex.get(&fav_url).cloned() {
-                    ui.horizontal(|ui| {
-                        draw_tex(ui, &tex, 20.0);
-                        ui.label(RichText::new("Favicon loaded").weak().small());
-                    });
-                } else if !fav_url.is_empty()
-                    && self.favicon_last == fav_url
-                    && self.favicon_rx.is_some()
-                {
-                    ui.label(RichText::new("Fetching favicon…").weak().small());
-                } else if let Some(err) = &self.favicon_error {
-                    ui.label(RichText::new(err.clone()).color(theme::DANGER).small());
-                }
-                ui.label(RichText::new("Username").small().weak());
-                ui.horizontal(|ui| {
-                    let w = ui.available_width() - 30.0;
-                    ui.add(egui::TextEdit::singleline(&mut editor.draft.username).desired_width(w));
-                    if icons::button(ui, Icon::Dice, 16.0, true, false, "Random username").clicked()
-                    {
-                        editor.draft.username = passwords::generate_username();
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Password").small().weak());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Generate, 15.0, true, false, "Generate")
-                            .clicked()
-                        {
-                            use_gen = true;
-                        }
-                        if icons::button(
-                            ui,
-                            if editor.show { Icon::EyeOff } else { Icon::Eye },
-                            15.0,
-                            true,
-                            editor.show,
-                            "Show / hide",
-                        )
-                        .clicked()
-                        {
-                            editor.show = !editor.show;
-                        }
-                    });
-                });
-                ui.add(
-                    egui::TextEdit::singleline(&mut editor.draft.password)
-                        .password(!editor.show)
-                        .desired_width(f32::INFINITY),
-                );
-                let (score, label) = passwords::strength(&editor.draft.password);
-                pw_strength_bar(
-                    ui,
-                    score,
-                    label,
-                    passwords::entropy_bits(&editor.draft.password),
-                );
-                pw_field(ui, "Website", &mut editor.draft.url);
-                ui.label(RichText::new(crate::tr!("Folder")).small().weak());
-                let folders = self.passwords.all_folders();
-                egui::ComboBox::from_id_source("pw_folder")
-                    .selected_text(if editor.draft.category.trim().is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        editor.draft.category.clone()
-                    })
-                    .width(ui.available_width())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut editor.draft.category, String::new(), "(none)");
-                        for f in &folders {
-                            ui.selectable_value(&mut editor.draft.category, f.clone(), f);
-                        }
-                        if ui.selectable_label(false, "＋ New folder…").clicked() {
-                            editor.new_folder = true;
-                        }
-                    });
-                if editor.new_folder {
-                    ui.horizontal(|ui| {
-                        let w = ui.available_width() - 30.0;
-                        ui.add(
-                            egui::TextEdit::singleline(&mut editor.new_folder_name)
-                                .hint_text("New folder name")
-                                .desired_width(w),
-                        );
-                        if icons::button(
-                            ui,
-                            Icon::Check,
-                            16.0,
-                            true,
-                            false,
-                            crate::tr!("Create folder"),
-                        )
-                        .clicked()
-                        {
-                            let name = editor.new_folder_name.trim().to_string();
-                            if !name.is_empty() {
-                                self.passwords.create_folder(&name);
-                                editor.draft.category = name;
-                                editor.new_folder_name.clear();
-                                editor.new_folder = false;
-                            }
-                        }
-                    });
-                }
-                pw_field(ui, "TOTP secret (base32)", &mut editor.draft.totp);
-                ui.label(RichText::new("Notes").small().weak());
-                ui.add(
-                    egui::TextEdit::multiline(&mut editor.draft.notes)
-                        .desired_rows(3)
-                        .desired_width(f32::INFINITY),
-                );
-                if editor.draft.title.trim().is_empty() {
-                    ui.label(RichText::new("Enter a title.").color(theme::DANGER).small());
-                }
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Check, 22.0, true, false, crate::tr!("Save"))
-                        .clicked()
-                    {
-                        save = true;
-                    }
-                    if icons::button(ui, Icon::Close, 22.0, true, false, crate::tr!("Cancel"))
-                        .clicked()
-                    {
-                        cancel = true;
-                    }
-                });
-            });
-
-        if force_favicon {
-            let u = self.favicon_url.trim().to_string();
-            if !u.is_empty() {
-                self.favicon_tex.remove(&u);
-                self.favicon_last.clear();
-                self.start_favicon_fetch(&u);
-            }
-        }
-        // The favicon URL is app state; write it back into the draft.
-        editor.draft.favicon = self.favicon_url.trim().to_string();
-        if use_gen {
-            editor.draft.password = passwords::generate(
-                self.pw_gen_len,
-                self.pw_gen_upper,
-                self.pw_gen_lower,
-                self.pw_gen_digits,
-                self.pw_gen_special,
-            );
-            editor.show = true;
-        }
-        if save {
-            if editor.draft.title.trim().is_empty() {
-                self.status = "Enter a title".into();
-            } else {
-                let now = passwords::now_unix();
-                editor.draft.updated = now;
-                if editor.is_new {
-                    editor.draft.created = now;
-                    let id = self.passwords.add(editor.draft.clone());
-                    self.pw_sel = Some(id);
-                } else {
-                    let id = editor.draft.id;
-                    if let Some(e) = self.passwords.get_mut(id) {
-                        *e = editor.draft.clone();
-                    }
-                    self.pw_sel = Some(id);
-                }
-                self.save_passwords();
-                let cat = editor.draft.category.trim().to_string();
-                if !cat.is_empty() {
-                    self.pw_expanded.insert(cat);
-                }
-                self.status = crate::tr!("Saved").into();
-                keep = false;
-            }
-        }
-        if cancel {
-            keep = false;
-        }
-        if keep {
-            self.pw_editor = Some(editor);
-        }
-    }
-
-    fn pw_generator_ui(&mut self, ctx: &egui::Context) {
-        if !self.pw_gen_open {
-            return;
-        }
-        let mut open = true;
-        let mut regen = false;
-        let mut changed = false;
-        let mut copy = false;
-        egui::Window::new("pw_gen")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_width(340.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Generate, 16.0, theme::ACCENT);
-                    ui.label(RichText::new("Password generator").strong());
-                });
-                ui.separator();
-                changed |= ui
-                    .add(egui::Slider::new(&mut self.pw_gen_len, 8..=128).text("Length"))
-                    .changed();
-                ui.horizontal_wrapped(|ui| {
-                    changed |= ui.checkbox(&mut self.pw_gen_upper, "A-Z").changed();
-                    changed |= ui.checkbox(&mut self.pw_gen_lower, "a-z").changed();
-                    changed |= ui.checkbox(&mut self.pw_gen_digits, "0-9").changed();
-                    changed |= ui.checkbox(&mut self.pw_gen_special, "!@#").changed();
-                });
-                ui.add_space(6.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.pw_gen_value)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY),
-                );
-                let (score, label) = passwords::strength(&self.pw_gen_value);
-                pw_strength_bar(
-                    ui,
-                    score,
-                    label,
-                    passwords::entropy_bits(&self.pw_gen_value),
-                );
-                ui.add_space(6.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 16.0, true, false, crate::tr!("Close"))
-                        .clicked()
-                    {
-                        open = false;
-                    }
-                    if icons::button(ui, Icon::Copy, 16.0, true, false, crate::tr!("Copy"))
-                        .clicked()
-                    {
-                        copy = true;
-                    }
-                    if icons::button(ui, Icon::Refresh, 16.0, true, false, "Regenerate").clicked() {
-                        regen = true;
-                    }
-                });
-            });
-        if changed || regen {
-            self.pw_gen_value = passwords::generate(
-                self.pw_gen_len,
-                self.pw_gen_upper,
-                self.pw_gen_lower,
-                self.pw_gen_digits,
-                self.pw_gen_special,
-            );
-        }
-        if copy {
-            ctx.copy_text(self.pw_gen_value.clone());
-            self.status = "Copied generated password".into();
-        }
-        if !open {
-            self.pw_gen_open = false;
-        }
-    }
-
-    /// Import / export the password store as JSON.
-    fn pw_io_ui(&mut self, ctx: &egui::Context) {
-        if !self.pw_io_open {
-            return;
-        }
-        let mut open = true;
-        let mut do_export = false;
-        let mut do_import = false;
-        egui::Window::new("pw_io")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_width(440.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Upload, 16.0, theme::ACCENT);
-                    ui.label(RichText::new("Encrypted import / export").strong());
-                });
-                ui.separator();
-                ui.label(RichText::new("File").small().weak());
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.pw_io_path)
-                        .hint_text("~/passwords-export.json")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new("Password (encrypts the export / unlocks an encrypted import)")
-                        .small()
-                        .weak(),
-                );
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.pw_io_password)
-                        .password(true)
-                        .hint_text("16+ chars, mixed case, a number and a symbol")
-                        .desired_width(f32::INFINITY),
-                );
-                if !self.pw_io_password.is_empty() {
-                    ui.add_space(4.0);
-                    policy_checklist(ui, &self.pw_io_password);
-                }
-                if let Some(err) = &self.pw_io_error {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(err.clone()).color(theme::DANGER).small());
-                }
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "Export writes the store encrypted (AES-256-GCM with an Argon2id key from the password). Import merges entries from an encrypted backup, plaintext JSON, a JSON array, a { \"Title\": \"secret\" } map, or an otpauth:// URI.",
-                    )
-                    .weak()
-                    .small(),
-                );
-                ui.add_space(10.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 16.0, true, false, crate::tr!("Close")).clicked() {
-                        open = false;
-                    }
-                    if icons::button(ui, Icon::Download, 16.0, true, false, "Import from file").clicked() {
-                        do_import = true;
-                    }
-                    if icons::button(ui, Icon::Upload, 16.0, true, false, "Export to file").clicked() {
-                        do_export = true;
-                    }
-                });
-            });
-        if do_export {
-            self.pw_export();
-        }
-        if do_import {
-            self.pw_import();
-        }
-        if !open {
-            self.pw_io_open = false;
-        }
-    }
-
-    /// Create a new folder.
-    fn pw_new_folder_ui(&mut self, ctx: &egui::Context) {
-        if !self.pw_new_folder_open {
-            return;
-        }
-        let mut open = true;
-        let mut create = false;
-        egui::Window::new("pw_new_folder")
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.set_width(320.0);
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::FolderPlus, 16.0, theme::ACCENT);
-                    ui.label(RichText::new(crate::tr!("New folder")).strong());
-                });
-                ui.separator();
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.pw_new_folder_name)
-                        .hint_text("Folder name")
-                        .desired_width(f32::INFINITY),
-                );
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
-                        .clicked()
-                    {
-                        open = false;
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::Check,
-                        18.0,
-                        !self.pw_new_folder_name.trim().is_empty(),
-                        false,
-                        "Create folder",
-                    )
-                    .clicked()
-                    {
-                        create = true;
-                    }
-                });
-            });
-        if create {
-            let name = self.pw_new_folder_name.trim().to_string();
-            if !name.is_empty() {
-                if self.passwords.create_folder(&name) {
-                    self.status = format!("Folder \"{name}\" created");
-                }
-                self.pw_category = Some(name.clone());
-                self.pw_expanded.insert(name);
-                self.save_passwords();
-                self.pw_new_folder_open = false;
-                self.pw_new_folder_name.clear();
-            }
-        }
-        if !open {
-            self.pw_new_folder_open = false;
-        }
-    }
-
-    /// Rename / delete folder dialogs.
-    fn pw_folder_dialog_ui(&mut self, ctx: &egui::Context) {
-        if let Some(old) = self.pw_folder_rename.clone() {
-            let mut open = true;
-            let mut apply = false;
-            egui::Window::new("pw_folder_rename")
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.set_width(320.0);
-                    ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Edit, 16.0, theme::ACCENT);
-                        ui.label(RichText::new("Rename folder").strong());
-                    });
-                    ui.separator();
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.pw_folder_rename_name)
-                            .hint_text("Folder name")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(8.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
-                            .clicked()
-                        {
-                            open = false;
-                        }
-                        if icons::button(
-                            ui,
-                            Icon::Check,
-                            18.0,
-                            !self.pw_folder_rename_name.trim().is_empty(),
-                            false,
-                            "Rename",
-                        )
-                        .clicked()
-                        {
-                            apply = true;
-                        }
-                    });
-                });
-            if apply {
-                let new = self.pw_folder_rename_name.trim().to_string();
-                if self.passwords.rename_folder(&old, &new) {
-                    if self.pw_expanded.remove(&old) {
-                        self.pw_expanded.insert(new.clone());
-                    }
-                    if self.pw_category.as_deref() == Some(old.as_str()) {
-                        self.pw_category = Some(new.clone());
-                    }
-                    self.save_passwords();
-                    self.status = format!("Renamed folder to \"{new}\"");
-                } else {
-                    self.status = "Could not rename (empty or already exists)".into();
-                }
-                self.pw_folder_rename = None;
-            } else if !open {
-                self.pw_folder_rename = None;
-            }
-        }
-
-        if let Some(name) = self.pw_folder_delete.clone() {
-            let mut open = true;
-            let mut confirm = false;
-            egui::Window::new("pw_folder_delete")
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.set_width(340.0);
-                    ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Warning, 18.0, theme::DANGER);
-                        ui.label(RichText::new(format!("Delete folder \"{name}\"?")).strong());
-                    });
-                    ui.add_space(4.0);
-                    ui.weak("Its entries move to Uncategorized; no entries are deleted.");
-                    ui.add_space(8.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(ui, Icon::Close, 18.0, true, false, crate::tr!("Cancel"))
-                            .clicked()
-                        {
-                            open = false;
-                        }
-                        if icons::button(
-                            ui,
-                            Icon::Trash,
-                            18.0,
-                            true,
-                            false,
-                            crate::tr!("Delete folder"),
-                        )
-                        .clicked()
-                        {
-                            confirm = true;
-                        }
-                    });
-                });
-            if confirm {
-                self.passwords.delete_folder(&name);
-                self.pw_expanded.remove(&name);
-                if self.pw_category.as_deref() == Some(name.as_str()) {
-                    self.pw_category = None;
-                }
-                self.save_passwords();
-                self.status = format!("Deleted folder \"{name}\"");
-                self.pw_folder_delete = None;
-            } else if !open {
-                self.pw_folder_delete = None;
-            }
-        }
-    }
-
-    /// Encrypt the password store under the dialog's password and write it.
-    fn pw_export(&mut self) {
-        let path = expand_tilde(&self.pw_io_path);
-        if path.as_os_str().is_empty() {
-            self.pw_io_error = Some("Enter a file path".into());
-            return;
-        }
-        let problems = Keyfile::password_problems(&self.pw_io_password);
-        if !problems.is_empty() {
-            self.pw_io_error = Some(format!("Export password: {}", problems.join(", ")));
-            return;
-        }
-        let json = match serde_json::to_string_pretty(&self.passwords) {
-            Ok(j) => j,
-            Err(e) => {
-                self.pw_io_error = Some(format!("Export failed: {e}"));
-                return;
-            }
-        };
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let blob = crypto::encrypt_with_password(&self.pw_io_password, json.as_bytes());
-        match std::fs::write(&path, blob) {
-            Ok(()) => {
-                restrict_permissions(&path);
-                self.pw_io_error = None;
-                self.status = format!(
-                    "Exported {} entr{} (encrypted) to {}",
-                    self.passwords.entries.len(),
-                    if self.passwords.entries.len() == 1 {
-                        "y"
-                    } else {
-                        "ies"
-                    },
-                    path.display()
-                );
-            }
-            Err(e) => self.pw_io_error = Some(format!("Export failed: {e}")),
-        }
-    }
-
-    /// Merge entries from the chosen file (decrypting it first if needed).
-    fn pw_import(&mut self) {
-        let path = expand_tilde(&self.pw_io_path);
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => {
-                self.pw_io_error = Some(format!("Could not read {}: {e}", path.display()));
-                return;
-            }
-        };
-        let text = if crypto::is_password_encrypted(&bytes) {
-            if self.pw_io_password.is_empty() {
-                self.pw_io_error = Some("This backup is encrypted — enter its password".into());
-                return;
-            }
-            match crypto::decrypt_with_password(&self.pw_io_password, &bytes) {
-                Some(pt) => match String::from_utf8(pt) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        self.pw_io_error = Some("Decrypted data is not text".into());
-                        return;
-                    }
-                },
-                None => {
-                    self.pw_io_error = Some("Wrong password (or the file is damaged)".into());
-                    return;
-                }
-            }
-        } else {
-            match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    self.pw_io_error = Some("Not a text/JSON file".into());
-                    return;
-                }
-            }
-        };
-        match passwords::parse_import(&text) {
-            Ok(entries) => {
-                let n = entries.len();
-                let now = passwords::now_unix();
-                let mut first = None;
-                for mut e in entries {
-                    e.id = 0;
-                    if e.created == 0 {
-                        e.created = now;
-                    }
-                    e.updated = now;
-                    if !e.category.trim().is_empty() {
-                        self.passwords.create_folder(&e.category);
-                    }
-                    let id = self.passwords.add(e);
-                    if first.is_none() {
-                        first = Some(id);
-                    }
-                }
-                self.save_passwords();
-                if let Some(id) = first {
-                    self.pw_sel = Some(id);
-                }
-                self.pw_io_error = None;
-                self.status = format!("Imported {n} entr{}", if n == 1 { "y" } else { "ies" });
-            }
-            Err(e) => self.pw_io_error = Some(format!("Import failed: {e}")),
-        }
-    }
-
     // -------------------------------------------------------------- UI parts
 
     fn top_bar(&mut self, ctx: &egui::Context) {
@@ -7685,7 +6083,7 @@ impl EncryptedNoteApp {
                             self.toggle_bookmark();
                         }
                         ui.add_space(6.0);
-                        // ---- tools: feeds, passwords, save
+                        // ---- tools: feeds, save
                         if icons::button(
                             ui,
                             Icon::Rss,
@@ -7697,18 +6095,6 @@ impl EncryptedNoteApp {
                         .clicked()
                         {
                             self.feeds_open = !self.feeds_open;
-                        }
-                        if icons::button(
-                            ui,
-                            Icon::Passwords,
-                            17.0,
-                            true,
-                            self.passwords_open,
-                            crate::tr!("Password manager"),
-                        )
-                        .clicked()
-                        {
-                            self.toggle_passwords();
                         }
                         if icons::button(ui, Icon::Save, 17.0, !self.tabs.is_empty(), false, "Save")
                             .clicked()
@@ -8148,18 +6534,6 @@ impl EncryptedNoteApp {
                     .clicked()
                     {
                         self.feeds_open = !self.feeds_open;
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::Passwords,
-                        16.0,
-                        true,
-                        self.passwords_open,
-                        "Password manager",
-                    )
-                    .clicked()
-                    {
-                        self.toggle_passwords();
                     }
                     let starred = self
                         .tabs
@@ -8774,12 +7148,7 @@ impl EncryptedNoteApp {
             .fill(theme::BASE)
             .inner_margin(egui::Margin::symmetric(16.0, 8.0));
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            // The password manager and RSS reader don't need an open vault.
-            if self.passwords_open {
-                self.passwords_ui(ui);
-                return;
-            }
-
+            // The RSS reader does not need an open vault.
             if self.vault.is_none() {
                 self.welcome_ui(ui);
                 return;
@@ -10672,11 +9041,7 @@ impl EncryptedNoteApp {
                     .fit_to_exact_size(egui::vec2(104.0, 104.0)),
             );
             ui.add_space(6.0);
-            ui.label(
-                RichText::new(crate::tr!("Encrypted Note"))
-                    .size(34.0)
-                    .strong(),
-            );
+            ui.label(RichText::new("Mahzen").size(34.0).strong());
             ui.label(RichText::new(crate::tr!("AES-256 encrypted markdown vault")).weak());
             ui.add_space(20.0);
             if icons::button(
@@ -12353,7 +10718,7 @@ impl eframe::App for EncryptedNoteApp {
             if let Some(rs) = frame.wgpu_render_state() {
                 let info = rs.adapter.get_info();
                 eprintln!(
-                    "Encrypted Note: GPU rendering — backend={:?}, device='{}', driver='{} {}'",
+                    "Mahzen: GPU rendering — backend={:?}, device='{}', driver='{} {}'",
                     info.backend, info.name, info.driver, info.driver_info
                 );
             }
@@ -12362,22 +10727,14 @@ impl eframe::App for EncryptedNoteApp {
         // actually changes. Sending it every frame spams the compositor with
         // reconfigure requests, which can make a fullscreen window unresponsive.
         let desired_title = if self.show_password_warning {
-            format!(
-                "{} — {}",
-                crate::tr!("Encrypted Note"),
-                crate::tr!("Save your password")
-            )
+            format!("{} — {}", "Mahzen", crate::tr!("Save your password"))
         } else if !matches!(self.gate, Gate::Open) {
-            format!(
-                "{} — {}",
-                crate::tr!("Encrypted Note"),
-                crate::tr!("Locked")
-            )
+            format!("{} — {}", "Mahzen", crate::tr!("Locked"))
         } else if let Some(tab) = self.tabs.get(self.active) {
             let mark = if tab.dirty() { "● " } else { "" };
-            format!("{mark}{} — {}", tab.title, crate::tr!("Encrypted Note"))
+            format!("{mark}{} — {}", tab.title, "Mahzen")
         } else {
-            crate::tr!("Encrypted Note").to_string()
+            "Mahzen".to_string()
         };
         if desired_title != self.window_title {
             self.window_title = desired_title.clone();
@@ -12474,7 +10831,6 @@ impl eframe::App for EncryptedNoteApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
         self.poll_full_article();
-        self.tick_favicon(ctx);
 
         // Apply deferred actions now that all UI borrows have ended.
         if let Some((y, m, d)) = self.pending_daily.take() {
@@ -13494,103 +11850,6 @@ fn rasterize_svg_bytes(data: &[u8], target_w: u32) -> Option<egui::ColorImage> {
         [w as usize, h as usize],
         &out,
     ))
-}
-
-/// Draw a texture at a square size (used for favicon icons).
-fn draw_tex(ui: &mut egui::Ui, tex: &egui::TextureHandle, size: f32) {
-    ui.add(
-        egui::Image::new(egui::load::SizedTexture::from_handle(tex))
-            .fit_to_exact_size(egui::vec2(size, size))
-            .rounding(egui::Rounding::same(3.0)),
-    );
-}
-
-/// A small palette of glyphs an entry can use as its icon.
-const PW_ICONS: &[&str] = &[
-    "🔑", "🔒", "🌐", "📧", "💳", "🏦", "🛒", "🎮", "💬", "📱", "🖥", "☁", "🐙", "📦", "🎵", "🎬",
-    "📸", "🛠", "⚙", "🎓", "❤", "⭐", "🔥", "🚀", "🧾", "💼", "🏠", "🔖",
-];
-
-/// A small rounded "chip" used for password categories.
-fn pw_chip(ui: &mut egui::Ui, text: &str) {
-    egui::Frame::none()
-        .fill(theme::WIDGET_ACTIVE)
-        .rounding(egui::Rounding::same(6.0))
-        .inner_margin(egui::Margin::symmetric(8.0, 2.0))
-        .show(ui, |ui| {
-            ui.label(RichText::new(text).small().color(theme::TEXT));
-        });
-}
-
-/// A four-segment strength meter with a label and an entropy estimate.
-fn pw_strength_bar(ui: &mut egui::Ui, score: u8, label: &str, bits: f64) {
-    let color = match score {
-        0 | 1 => theme::DANGER,
-        2 => Color32::from_rgb(0xe0, 0xb0, 0x5f),
-        3 => theme::LINK,
-        _ => theme::SUCCESS,
-    };
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 3.0;
-        for i in 0..4 {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 5.0), egui::Sense::hover());
-            let fill = if i < score {
-                color
-            } else {
-                ui.visuals().widgets.inactive.bg_fill
-            };
-            ui.painter()
-                .rect_filled(rect, egui::Rounding::same(2.0), fill);
-        }
-        ui.add_space(4.0);
-        ui.label(RichText::new(label).small().color(color));
-        ui.label(RichText::new(format!("{bits:.0} bits")).small().weak());
-    });
-}
-
-/// A labelled single-line text field for the password editor.
-fn pw_field(ui: &mut egui::Ui, label: &str, text: &mut String) {
-    ui.label(RichText::new(label).small().weak());
-    ui.add(egui::TextEdit::singleline(text).desired_width(f32::INFINITY));
-}
-
-/// A labelled value with a copy button on the right. Returns `true` on copy.
-fn pw_copy_row(ui: &mut egui::Ui, label: &str, value: &str) -> bool {
-    let mut copy = false;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).small().weak());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if icons::button(
-                ui,
-                Icon::Copy,
-                15.0,
-                !value.is_empty(),
-                false,
-                crate::tr!("Copy"),
-            )
-            .clicked()
-            {
-                copy = true;
-            }
-        });
-    });
-    ui.label(RichText::new(if value.is_empty() { "—" } else { value }).monospace());
-    copy
-}
-
-/// Default file path offered by the password import/export dialog.
-fn default_export_path() -> String {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    format!("{home}/passwords-export.json")
-}
-
-/// Restrict a file to owner read/write only (best-effort, Unix).
-fn restrict_permissions(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
 }
 
 /// Expand a leading `~` to the user's home directory.

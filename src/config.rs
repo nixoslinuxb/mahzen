@@ -1,7 +1,7 @@
 //! Persisted application configuration.
 //!
-//! Stored as JSON under `$XDG_CONFIG_HOME/encrypted-note/config.json`
-//! (falling back to `~/.config/encrypted-note/config.json`). We deliberately
+//! Stored as JSON under `$XDG_CONFIG_HOME/mahzen/config.json`
+//! (falling back to `~/.config/mahzen/config.json`). We deliberately
 //! avoid extra crates such as `directories` to keep the dependency tree small.
 
 use std::fs;
@@ -11,12 +11,21 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 /// Base directory for app config/state.
+///
+/// The app was originally called *Encrypted Note* and stored its config in
+/// `…/encrypted-note/`. On first launch after the rename we move that directory
+/// to `…/mahzen/` so settings, the lockout state and the feed cache survive.
 pub fn dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("encrypted-note")
+    let new = base.join("mahzen");
+    let old = base.join("encrypted-note");
+    if !new.exists() && old.is_dir() {
+        let _ = fs::rename(&old, &new);
+    }
+    new
 }
 
 /// Current wall-clock time as seconds since the Unix epoch.

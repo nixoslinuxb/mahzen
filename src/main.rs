@@ -1,4 +1,4 @@
-//! Encrypted Note — a native, Obsidian-like markdown note taking app whose
+//! Mahzen — a native, Obsidian-like markdown note taking app whose
 //! contents are encrypted at rest with AES-256-GCM, protected by a master
 //! password (Argon2id-derived key).
 //!
@@ -22,7 +22,6 @@ mod math;
 mod media;
 mod mermaid;
 mod palette;
-mod passwords;
 mod portability;
 mod query;
 mod search;
@@ -53,7 +52,7 @@ fn main() -> eframe::Result<()> {
     // Enforce Wayland: we deliberately do not support X11 or XWayland.
     if std::env::var_os("WAYLAND_DISPLAY").is_none() {
         eprintln!(
-            "Encrypted Note requires a Wayland session, but WAYLAND_DISPLAY is not set.\n\
+            "Mahzen requires a Wayland session, but WAYLAND_DISPLAY is not set.\n\
              This app intentionally does not support X11 (including XWayland)."
         );
         std::process::exit(1);
@@ -62,7 +61,7 @@ fn main() -> eframe::Result<()> {
     if std::env::args().any(|a| a == "--clip-selftest") {
         system_clipboard::init();
         std::thread::sleep(std::time::Duration::from_millis(900));
-        system_clipboard::set("encrypted-note-clip-selftest");
+        system_clipboard::set("mahzen-clip-selftest");
         std::thread::sleep(std::time::Duration::from_millis(1200));
         eprintln!("clip-selftest get = {:?}", system_clipboard::get());
         std::process::exit(0);
@@ -72,7 +71,7 @@ fn main() -> eframe::Result<()> {
     let _instance = match single_instance_guard() {
         Some(guard) => guard,
         None => {
-            eprintln!("Encrypted Note is already running — focus the existing window.");
+            eprintln!("Mahzen is already running — focus the existing window.");
             std::process::exit(0);
         }
     };
@@ -84,8 +83,8 @@ fn main() -> eframe::Result<()> {
     egui_winit::external_clipboard::install(system_clipboard::get, system_clipboard::set);
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Encrypted Note")
-        .with_app_id("encrypted-note")
+        .with_title("Mahzen")
+        .with_app_id("mahzen")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size([720.0, 480.0]);
     // Start windowed so the login screen is a normal window; the app switches to
@@ -105,7 +104,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "Encrypted Note",
+        "Mahzen",
         native_options,
         Box::new(|cc| Box::new(app::EncryptedNoteApp::new(cc)) as Box<dyn eframe::App>),
     )
@@ -127,10 +126,10 @@ fn single_instance_guard() -> Option<std::os::unix::net::UnixListener> {
                     std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
                 })
                 .unwrap_or_else(std::env::temp_dir)
-                .join("encrypted-note")
+                .join("mahzen")
         });
     let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("encrypted-note.sock");
+    let path = dir.join("mahzen.sock");
     if path.exists() {
         // A live listener answers a connect; a stale socket file does not.
         if UnixStream::connect(&path).is_ok() {

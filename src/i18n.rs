@@ -76,7 +76,6 @@ const TR: &[(&str, &str)] = &[
     ("New canvas", "Yeni canvas"),
     ("Open canvas board", "Canvas panosu aç"),
     ("RSS feeds", "RSS akışları"),
-    ("Password manager", "Şifre yöneticisi"),
     ("Undo", "Geri al"),
     ("Redo", "Yinele"),
     ("Cycle window mode (F11)", "Pencere modunu değiştir (F11)"),
@@ -366,7 +365,6 @@ const TR: &[(&str, &str)] = &[
     ("Load full article", "Tam makaleyi yükle"),
     ("Open in browser", "Tarayıcıda aç"),
     // ------------------------------------------------------------- gate
-    ("Encrypted Note", "Encrypted Note"),
     (
         "AES-256 encrypted markdown vault",
         "AES-256 şifreli markdown kasası",

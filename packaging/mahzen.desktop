@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Mahzen
+GenericName=Encrypted Markdown Notes
+Comment=A native, Obsidian-like encrypted markdown note taking app (AES-256)
+Exec=mahzen %F
+Icon=mahzen
+Terminal=false
+Categories=Office;TextEditor;Security;
+Keywords=notes;markdown;encrypted;aes;obsidian;wiki;mahzen;
+StartupNotify=true
+StartupWMClass=mahzen
