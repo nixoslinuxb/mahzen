@@ -6922,129 +6922,230 @@ impl EncryptedNoteApp {
     fn top_bar(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::side_top_panel(&ctx.style())
             .fill(theme::PANEL_DEEP)
-            .inner_margin(egui::Margin::symmetric(4.0, 8.0));
+            .inner_margin(egui::Margin::symmetric(4.0, 6.0));
         egui::SidePanel::left("tool_bar")
             .frame(frame)
-            .exact_width(50.0)
+            .exact_width(40.0)
             .resizable(false)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            // Core actions — larger icons, stacked top → bottom.
-                            if icons::button(
-                                ui,
-                                Icon::FolderOpen,
-                                26.0,
-                                true,
-                                false,
-                                crate::tr!("Open vault"),
-                            )
+                {
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        // ---- top pair: sidebar toggle + new note
+                        if icons::button(
+                            ui,
+                            Icon::PanelRight,
+                            17.0,
+                            true,
+                            self.show_right,
+                            crate::tr!("Toggle side panel"),
+                        )
+                        .clicked()
+                        {
+                            self.show_right = !self.show_right;
+                        }
+                        if icons::button(ui, Icon::Add, 17.0, true, false, crate::tr!("New note"))
                             .clicked()
-                            {
-                                self.open_picker();
-                            }
-                            if icons::button(
-                                ui,
-                                Icon::Add,
-                                26.0,
-                                true,
-                                false,
-                                crate::tr!("New note"),
-                            )
+                        {
+                            self.new_note_open = true;
+                            self.new_note_error = None;
+                            self.new_note_name.clear();
+                        }
+                        ui.add_space(6.0);
+                        // ---- search + quick switcher
+                        if icons::button(
+                            ui,
+                            Icon::Search,
+                            17.0,
+                            true,
+                            false,
+                            crate::tr!("Command palette (Ctrl+P)"),
+                        )
+                        .clicked()
+                        {
+                            self.open_palette();
+                        }
+                        if icons::button(
+                            ui,
+                            Icon::FolderOpen,
+                            17.0,
+                            true,
+                            false,
+                            crate::tr!("Open vault"),
+                        )
+                        .clicked()
+                        {
+                            self.open_picker();
+                        }
+                        ui.add_space(6.0);
+                        // ---- notes: daily, graph, canvas, tags, bookmarks
+                        if icons::button(
+                            ui,
+                            Icon::Today,
+                            17.0,
+                            true,
+                            false,
+                            crate::tr!("Open today's daily note"),
+                        )
+                        .clicked()
+                        {
+                            self.open_daily_note();
+                        }
+                        if icons::button(
+                            ui,
+                            Icon::Graph,
+                            17.0,
+                            true,
+                            self.show_graph,
+                            crate::tr!("Toggle graph view"),
+                        )
+                        .clicked()
+                        {
+                            self.show_graph = !self.show_graph;
+                        }
+                        if icons::button(
+                            ui,
+                            Icon::Split,
+                            17.0,
+                            true,
+                            self.canvas.is_some(),
+                            crate::tr!("Open canvas board"),
+                        )
+                        .clicked()
+                        {
+                            self.open_canvas();
+                        }
+                        if icons::button(
+                            ui,
+                            Icon::Tag,
+                            17.0,
+                            true,
+                            self.tag_filter.is_some(),
+                            crate::tr!("Tags"),
+                        )
+                        .clicked()
+                        {
+                            self.tag_filter = None;
+                            self.show_search_results = false;
+                            self.search.clear();
+                        }
+                        let starred = self
+                            .tabs
+                            .get(self.active)
+                            .map(|t| self.bookmarks.contains(&t.path))
+                            .unwrap_or(false);
+                        if icons::button(
+                            ui,
+                            Icon::Star,
+                            17.0,
+                            self.tabs.get(self.active).is_some(),
+                            starred,
+                            if starred {
+                                crate::tr!("Remove bookmark")
+                            } else {
+                                crate::tr!("Bookmark this note")
+                            },
+                        )
+                        .clicked()
+                        {
+                            self.toggle_bookmark();
+                        }
+                        ui.add_space(6.0);
+                        // ---- tools: feeds, passwords, save
+                        if icons::button(
+                            ui,
+                            Icon::Rss,
+                            17.0,
+                            true,
+                            self.feeds_open,
+                            crate::tr!("RSS feeds"),
+                        )
+                        .clicked()
+                        {
+                            self.feeds_open = !self.feeds_open;
+                        }
+                        if icons::button(
+                            ui,
+                            Icon::Passwords,
+                            17.0,
+                            true,
+                            self.passwords_open,
+                            crate::tr!("Password manager"),
+                        )
+                        .clicked()
+                        {
+                            self.toggle_passwords();
+                        }
+                        if icons::button(ui, Icon::Save, 17.0, !self.tabs.is_empty(), false, "Save")
                             .clicked()
-                            {
-                                self.new_note_open = true;
-                                self.new_note_error = None;
-                                self.new_note_name.clear();
-                            }
-                            if icons::button(
-                                ui,
-                                Icon::Save,
-                                26.0,
-                                !self.tabs.is_empty(),
-                                false,
-                                "Save",
-                            )
-                            .clicked()
-                            {
-                                self.save_active();
-                            }
-                            if icons::button(ui, Icon::Lock, 26.0, true, false, "Lock now")
-                                .clicked()
-                            {
-                                self.lock();
-                            }
-                        });
-
-                        // View toggles pinned to the bottom-left.
-                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                            let view = self.tabs.get(self.active).map(|t| t.view);
-                            let enabled = view.is_some();
-                            if icons::button(
-                                ui,
-                                Icon::PanelRight,
-                                18.0,
-                                true,
-                                self.show_right,
-                                "Toggle side panel",
-                            )
-                            .clicked()
-                            {
-                                self.show_right = !self.show_right;
-                            }
-                            ui.separator();
-                            if icons::button(
-                                ui,
-                                Icon::Edit,
-                                18.0,
-                                enabled,
-                                view == Some(ViewMode::Edit),
-                                "Edit",
-                            )
-                            .clicked()
-                            {
-                                self.set_view(ViewMode::Edit);
-                            }
-                            if icons::button(
-                                ui,
-                                Icon::Split,
-                                18.0,
-                                enabled,
-                                view == Some(ViewMode::Split),
-                                "Split view",
-                            )
-                            .clicked()
-                            {
-                                self.set_view(ViewMode::Split);
-                            }
-                            if icons::button(
-                                ui,
-                                Icon::Preview,
-                                18.0,
-                                enabled,
-                                view == Some(ViewMode::Preview),
-                                "Preview",
-                            )
-                            .clicked()
-                            {
-                                self.set_view(ViewMode::Preview);
-                            }
-                            if icons::button(
-                                ui,
-                                Icon::Live,
-                                18.0,
-                                enabled,
-                                view == Some(ViewMode::Live),
-                                "Live preview",
-                            )
-                            .clicked()
-                            {
-                                self.set_view(ViewMode::Live);
-                            }
-                        });
+                        {
+                            self.save_active();
+                        }
                     });
+                }
+                // Push the bottom cluster to the bottom edge when there is room.
+                let rest = ui.available_height();
+                if rest > 130.0 {
+                    ui.add_space(rest - 126.0);
+                }
+                ui.vertical_centered(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    // ---- view modes
+                    let view = self.tabs.get(self.active).map(|t| t.view);
+                    let enabled = view.is_some();
+                    if icons::button(
+                        ui,
+                        Icon::Edit,
+                        15.0,
+                        enabled,
+                        view == Some(ViewMode::Edit),
+                        "Edit",
+                    )
+                    .clicked()
+                    {
+                        self.set_view(ViewMode::Edit);
+                    }
+                    if icons::button(
+                        ui,
+                        Icon::Split,
+                        15.0,
+                        enabled,
+                        view == Some(ViewMode::Split),
+                        "Split view",
+                    )
+                    .clicked()
+                    {
+                        self.set_view(ViewMode::Split);
+                    }
+                    if icons::button(
+                        ui,
+                        Icon::Preview,
+                        15.0,
+                        enabled,
+                        view == Some(ViewMode::Preview),
+                        "Preview",
+                    )
+                    .clicked()
+                    {
+                        self.set_view(ViewMode::Preview);
+                    }
+                    ui.add_space(6.0);
+                    if icons::button(
+                        ui,
+                        Icon::Edit,
+                        17.0,
+                        true,
+                        self.settings_open,
+                        crate::tr!("Settings"),
+                    )
+                    .clicked()
+                    {
+                        self.settings_open = true;
+                    }
+                    if icons::button(ui, Icon::Lock, 17.0, true, false, "Lock now").clicked() {
+                        self.lock();
+                    }
+                });
             });
     }
 
