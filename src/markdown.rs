@@ -992,24 +992,63 @@ fn render_table(
     salt: usize,
     embed: &dyn Fn(&str) -> Option<(String, String)>,
 ) {
-    egui::Grid::new(("md-table", salt))
-        .striped(true)
-        .spacing([14.0, 4.0])
+    if rows.is_empty() {
+        return;
+    }
+    // Spread the table across the reading column instead of letting it hug the
+    // left edge: every column gets an equal share of the available width, with
+    // cell text wrapping inside it.
+    let cols = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+    let spacing = 0.0f32;
+    let pad = 8.0f32;
+    let avail = ui.available_width().max(120.0);
+    let col_w = ((avail - spacing * (cols.saturating_sub(1) as f32)) / cols as f32).max(60.0);
+
+    egui::Frame::none()
+        .stroke(egui::Stroke::new(1.0_f32, crate::theme::BORDER))
+        .rounding(egui::Rounding::same(6.0))
+        .inner_margin(egui::Margin::same(1.0))
         .show(ui, |ui| {
-            for (r, row) in rows.iter().enumerate() {
-                for cell in row {
-                    ui.horizontal_wrapped(|ui| {
-                        if r == 0 {
-                            render_segments_bold(ui, cell, base_size, clicked, embed);
-                        } else {
-                            render_segments(ui, cell, base_size, clicked, embed);
+            ui.set_width(avail);
+            egui::Grid::new(("md-table", salt))
+                .striped(false)
+                .spacing([spacing, 0.0])
+                .min_col_width(col_w)
+                .show(ui, |ui| {
+                    for (r, row) in rows.iter().enumerate() {
+                        let is_header = r == 0;
+                        for c in 0..cols {
+                            let cell = row.get(c).map(String::as_str).unwrap_or("");
+                            let bg = if is_header {
+                                Some(crate::theme::PANEL)
+                            } else if r % 2 == 0 {
+                                Some(crate::theme::CODE_BG.linear_multiply(0.6))
+                            } else {
+                                None
+                            };
+                            let mut frame =
+                                egui::Frame::none().inner_margin(egui::Margin::symmetric(pad, 6.0));
+                            if let Some(bg) = bg {
+                                frame = frame.fill(bg);
+                            }
+                            frame.show(ui, |ui| {
+                                ui.set_min_width(col_w - pad * 2.0);
+                                ui.set_max_width(col_w - pad * 2.0);
+                                ui.vertical(|ui| {
+                                    ui.style_mut().wrap = Some(true);
+                                    if is_header {
+                                        render_segments_bold(ui, cell, base_size, clicked, embed);
+                                    } else {
+                                        render_segments(ui, cell, base_size, clicked, embed);
+                                    }
+                                });
+                            });
                         }
-                    });
-                }
-                ui.end_row();
-            }
+                        ui.end_row();
+                    }
+                });
         });
-    ui.add_space(4.0);
+    ui.add_space(6.0);
 }
 
 fn render_segments_bold(
@@ -1880,6 +1919,37 @@ mod tests {
         expand_refs(&mut t);
         assert_eq!(t, "(1)–(2)");
         reset_equations();
+    }
+
+    #[test]
+    fn tables_fill_the_reading_column() {
+        use eframe::egui;
+        let md = "| Name | Status | Notes |\n|---|---|---|\n| Alpha | done | short |\n| Beta | open | a much longer note body that should wrap |\n";
+        let avail = 640.0f32;
+        let mut measured = 0.0f32;
+        egui::__run_test_ctx(|ctx| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(avail, 400.0),
+                )),
+                focused: true,
+                ..Default::default()
+            };
+            ctx.begin_frame(input);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(avail);
+                let no_embed = |_t: &str| -> Option<(String, String)> { None };
+                let no_fence = |_u: &mut egui::Ui, _l: &str, _c: &str| -> bool { false };
+                render(ui, md, 14.0, &no_embed, &no_fence, 0);
+                measured = ui.min_rect().width();
+            });
+            let _ = ctx.end_frame();
+        });
+        assert!(
+            measured >= avail * 0.95,
+            "table should span the column, got {measured} of {avail}"
+        );
     }
 
     #[test]
