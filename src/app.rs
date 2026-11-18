@@ -473,6 +473,9 @@ enum ViewMode {
     Edit,
     Split,
     Preview,
+    /// Live preview is kept implemented (rendering + editor) but the per-tab
+    /// toggle only cycles Split → Edit → Preview.
+    #[allow(dead_code)]
     Live,
 }
 
@@ -2666,16 +2669,7 @@ impl EncryptedNoteApp {
                     "Vim mode off".into()
                 };
             }
-            Command::TogglePreview => {
-                if let Some(tab) = self.tabs.get_mut(self.active) {
-                    tab.view = match tab.view {
-                        ViewMode::Edit => ViewMode::Split,
-                        ViewMode::Split => ViewMode::Preview,
-                        ViewMode::Preview => ViewMode::Live,
-                        ViewMode::Live => ViewMode::Edit,
-                    };
-                }
-            }
+            Command::TogglePreview => self.cycle_view(),
             Command::ToggleWysiwyg => {
                 self.config.wysiwyg = !self.config.wysiwyg;
                 self.config.save();
@@ -4712,46 +4706,6 @@ impl EncryptedNoteApp {
                 }
                 ui.vertical_centered(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    // ---- view modes
-                    let view = self.tabs.get(self.active).map(|t| t.view);
-                    let enabled = view.is_some();
-                    if icons::button(
-                        ui,
-                        Icon::Edit,
-                        15.0,
-                        enabled,
-                        view == Some(ViewMode::Edit),
-                        "Edit",
-                    )
-                    .clicked()
-                    {
-                        self.set_view(ViewMode::Edit);
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::Split,
-                        15.0,
-                        enabled,
-                        view == Some(ViewMode::Split),
-                        "Split view",
-                    )
-                    .clicked()
-                    {
-                        self.set_view(ViewMode::Split);
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::Preview,
-                        15.0,
-                        enabled,
-                        view == Some(ViewMode::Preview),
-                        "Preview",
-                    )
-                    .clicked()
-                    {
-                        self.set_view(ViewMode::Preview);
-                    }
-                    ui.add_space(6.0);
                     if icons::button(
                         ui,
                         Icon::Edit,
@@ -4772,6 +4726,18 @@ impl EncryptedNoteApp {
     fn set_view(&mut self, view: ViewMode) {
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.view = view;
+        }
+    }
+
+    /// Cycle the active tab's view for the per-tab toggle button:
+    /// Split → Edit → Preview → Split …
+    fn cycle_view(&mut self) {
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.view = match tab.view {
+                ViewMode::Split => ViewMode::Edit,
+                ViewMode::Edit => ViewMode::Preview,
+                _ => ViewMode::Split,
+            };
         }
     }
 
@@ -5954,6 +5920,7 @@ impl EncryptedNoteApp {
         }
         let mut to_close: Option<usize> = None;
         let mut select: Option<usize> = None;
+        let mut cycle_click: Option<usize> = None;
         // Obsidian-style tabs: a darker strip, the active tab lifted to the
         // editor colour with an accent line along its top edge.
         ui.visuals_mut().selection.bg_fill = theme::WIDGET_ACTIVE;
@@ -6002,6 +5969,17 @@ impl EncryptedNoteApp {
                                     icons::icon(ui, Icon::Dot, 6.0, theme::ACCENT);
                                 }
                                 ui.label(RichText::new(&title).size(12.0).color(text_color));
+                                // Per-tab view toggle, top-right of the tab:
+                                // split → edit → preview → split …
+                                let view = self.tabs[i].view;
+                                let (icon, tip) = match view {
+                                    ViewMode::Split => (Icon::Split, crate::tr!("Split view")),
+                                    ViewMode::Edit => (Icon::Edit, crate::tr!("Edit")),
+                                    _ => (Icon::Preview, crate::tr!("Preview")),
+                                };
+                                if icons::button(ui, icon, 11.0, true, false, tip).clicked() {
+                                    cycle_click = Some(i);
+                                }
                                 let close = icons::button(
                                     ui,
                                     Icon::Close,
@@ -6097,6 +6075,10 @@ impl EncryptedNoteApp {
                 }
             }
         }
+        if let Some(i) = cycle_click {
+            self.active = i;
+            self.cycle_view();
+        }
         if let Some(i) = select {
             self.active = i;
         }
@@ -6110,6 +6092,7 @@ impl EncryptedNoteApp {
     fn stacked_tab_strip(&mut self, ui: &mut egui::Ui) {
         let mut to_close: Option<usize> = None;
         let mut select: Option<usize> = None;
+        let mut cycle_click: Option<usize> = None;
         let count = self.tabs.len();
         if count == 0 {
             return;
@@ -6173,6 +6156,21 @@ impl EncryptedNoteApp {
                                                 {
                                                     to_close = Some(i);
                                                 }
+                                                let view = self.tabs[i].view;
+                                                let (icon, tip) = match view {
+                                                    ViewMode::Split => {
+                                                        (Icon::Split, crate::tr!("Split view"))
+                                                    }
+                                                    ViewMode::Edit => {
+                                                        (Icon::Edit, crate::tr!("Edit"))
+                                                    }
+                                                    _ => (Icon::Preview, crate::tr!("Preview")),
+                                                };
+                                                if icons::button(ui, icon, 11.0, true, false, tip)
+                                                    .clicked()
+                                                {
+                                                    cycle_click = Some(i);
+                                                }
                                             },
                                         );
                                     });
@@ -6207,6 +6205,10 @@ impl EncryptedNoteApp {
                         }
                     });
             });
+        if let Some(i) = cycle_click {
+            self.active = i;
+            self.cycle_view();
+        }
         if let Some(i) = select {
             self.active = i;
         }
@@ -6270,6 +6272,7 @@ impl EncryptedNoteApp {
         let mut select: Option<usize> = None;
         let mut close: Option<usize> = None;
         let mut preview: Option<usize> = None;
+        let mut cycle: Option<usize> = None;
         egui::SidePanel::left("vertical_tabs")
             .frame(frame)
             .exact_width(strip_w)
@@ -6414,6 +6417,37 @@ impl EncryptedNoteApp {
                     if eye_resp.clicked() {
                         preview = Some(i);
                     }
+                    // Per-tab view cycle: split → edit → preview.
+                    let view = self.tabs[i].view;
+                    let (vicon, vtip) = match view {
+                        ViewMode::Split => (Icon::Split, crate::tr!("Split view")),
+                        ViewMode::Edit => (Icon::Edit, crate::tr!("Edit")),
+                        _ => (Icon::Preview, crate::tr!("Preview")),
+                    };
+                    let vrect = egui::Rect::from_center_size(
+                        egui::pos2(rect.center().x, rect.max.y - 40.0),
+                        egui::vec2(w.max(16.0), 14.0),
+                    );
+                    let v_resp =
+                        ui.interact(vrect, ui.id().with(("vtabview", i)), egui::Sense::click());
+                    let glyph = match vicon {
+                        Icon::Split => "◫",
+                        Icon::Edit => "✎",
+                        _ => "◉",
+                    };
+                    painter.text(
+                        vrect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        glyph,
+                        egui::FontId::proportional(9.5),
+                        if v_resp.hovered() { theme::TEXT } else { color },
+                    );
+                    if v_resp.clicked() {
+                        cycle = Some(i);
+                    }
+                    if v_resp.hovered() {
+                        v_resp.on_hover_text(vtip);
+                    }
                     if x_resp.clicked() {
                         close = Some(i);
                     }
@@ -6436,6 +6470,10 @@ impl EncryptedNoteApp {
             self.active = i;
             self.set_view(ViewMode::Preview);
             self.status = crate::tr!("Preview").into();
+        }
+        if let Some(i) = cycle {
+            self.active = i;
+            self.cycle_view();
         }
         if let Some(i) = select {
             self.active = i;
@@ -10799,6 +10837,19 @@ mod tests {
         let ci = load_color_image(&path).unwrap();
         assert_eq!(ci.size, [2, 1]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn view_cycle_is_split_edit_preview() {
+        let next = |v: ViewMode| match v {
+            ViewMode::Split => ViewMode::Edit,
+            ViewMode::Edit => ViewMode::Preview,
+            _ => ViewMode::Split,
+        };
+        assert!(matches!(next(ViewMode::Split), ViewMode::Edit));
+        assert!(matches!(next(ViewMode::Edit), ViewMode::Preview));
+        assert!(matches!(next(ViewMode::Preview), ViewMode::Split));
+        assert!(matches!(next(ViewMode::Live), ViewMode::Split));
     }
 
     #[test]
