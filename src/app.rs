@@ -32,6 +32,9 @@ struct LegacyMigration {
     root: PathBuf,
     password: String,
     error: Option<String>,
+    /// Whether the password field has been focused once (don't steal focus
+    /// back on every frame, so the buttons stay clickable).
+    focus_requested: bool,
 }
 
 /// Which direction the Markdown portability dialog is working in.
@@ -4491,7 +4494,8 @@ impl EncryptedNoteApp {
                                 .password(true)
                                 .desired_width(f32::INFINITY),
                         );
-                        if mig.error.is_none() {
+                        if !mig.focus_requested {
+                            mig.focus_requested = true;
                             resp.request_focus();
                         }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
@@ -4549,6 +4553,8 @@ impl EncryptedNoteApp {
                 }
                 Err(e) => {
                     mig.error = Some(e);
+                    // Let the field take focus again so retyping works.
+                    mig.focus_requested = false;
                 }
             }
         } else if skip {
@@ -9339,8 +9345,13 @@ impl eframe::App for EncryptedNoteApp {
             ctx.request_repaint();
         }
 
-        // Open the last vault automatically; there is no login gate any more.
+        // One-time startup: open the last vault (or start the legacy
+        // conversion) and apply the saved window mode. The flag must be cleared
+        // here, before any early return, otherwise this block would recreate the
+        // migration screen — and wipe the password being typed — every frame.
         if self.apply_saved_window_mode {
+            self.apply_saved_window_mode = false;
+            self.send_window_mode(ctx);
             if let Some(path) = self.config.last_vault.clone() {
                 if path.is_dir() && self.vault.is_none() {
                     // A vault from the old encrypted version must be converted
@@ -9350,6 +9361,7 @@ impl eframe::App for EncryptedNoteApp {
                             root: path,
                             password: String::new(),
                             error: None,
+                            focus_requested: false,
                         });
                     } else {
                         self.open_vault(path);
@@ -9362,12 +9374,6 @@ impl eframe::App for EncryptedNoteApp {
         if self.legacy_migration.is_some() {
             self.legacy_migration_ui(ctx);
             return;
-        }
-
-        // Apply the saved startup window mode once, on the first frame.
-        if self.apply_saved_window_mode {
-            self.apply_saved_window_mode = false;
-            self.send_window_mode(ctx);
         }
         // Remember the windowed size so leaving fullscreen restores it.
         if self.window_mode == WindowMode::Windowed {
@@ -10812,6 +10818,39 @@ mod tests {
         assert!(clamp(1000.0, 0.05) >= min_right);
         // Degenerate widths cannot overflow the bounds.
         assert!(clamp(500.0, 0.9) >= min_right);
+    }
+
+    #[test]
+    fn legacy_migration_is_created_once() {
+        // Regression: the startup block must clear its one-shot flag before the
+        // migration screen returns early, otherwise the screen is rebuilt every
+        // frame and the typed password is wiped.
+        struct Sim {
+            apply_saved: bool,
+            migration: Option<String>,
+        }
+        fn frame(sim: &mut Sim) {
+            if sim.apply_saved {
+                sim.apply_saved = false;
+                if sim.migration.is_none() {
+                    sim.migration = Some(String::new());
+                }
+            }
+            if sim.migration.is_some() {
+                // early return in `update`
+            }
+        }
+        let mut sim = Sim {
+            apply_saved: true,
+            migration: None,
+        };
+        frame(&mut sim);
+        // Simulate typing into the screen.
+        sim.migration = Some("secret".into());
+        frame(&mut sim);
+        frame(&mut sim);
+        assert_eq!(sim.migration.as_deref(), Some("secret"));
+        assert!(!sim.apply_saved);
     }
 
     #[test]
