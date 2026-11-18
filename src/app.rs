@@ -7156,6 +7156,16 @@ impl EncryptedNoteApp {
             Vec::new()
         };
 
+        // Make sure the editor can always be typed into: if nothing else in the
+        // UI holds keyboard focus (e.g. right after opening a note, or after
+        // clicking empty space), focus the editor here.
+        if pane == 0 && !self.find_open {
+            let has_focus = ui.memory(|m| m.focused()).is_some();
+            if !has_focus {
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
+
         // Apply a pending find/replace selection before drawing the widget.
         if pane == 0 {
             if let Some((a, b)) = self.pending_select.take() {
@@ -7252,6 +7262,20 @@ impl EncryptedNoteApp {
                 wrap_after = resp.rect.width();
                 clicked_resp = Some(resp);
             });
+
+        // Clicking anywhere in the editor column (empty space, padding, the
+        // inline title) should focus the text field, not just the glyphs.
+        if pane == 0 && !self.find_open {
+            let pressed_here = ui.input(|i| {
+                i.pointer.any_pressed()
+                    && i.pointer
+                        .interact_pos()
+                        .is_some_and(|p| ui.max_rect().contains(p))
+            });
+            if pressed_here && ui.memory(|m| m.focused()) != Some(id) {
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
 
         // Secondary carets / selections (the primary is drawn by TextEdit).
         let multi_here = pane == 0 && self.multi_cursor && self.cursors.len() > 1;
@@ -10956,5 +10980,74 @@ mod tests {
         assert!(vault_file(&root, "../outside.png").is_none());
         assert!(vault_file(&root, "assets/../../outside.png").is_none());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod split_editor_probe {
+    /// Typing through the real concealed-markdown layouter must still edit the
+    /// buffer (a broken LayoutJob would make the editor ignore keystrokes).
+    #[test]
+    fn wysiwyg_layouter_accepts_typing() {
+        let mut text = "# Title\n\nHello **world**".to_string();
+        let miss = std::collections::HashSet::new();
+        egui::__run_test_ctx(|ctx| {
+            let mut size = 15.0;
+            for frame in 0..4 {
+                let mut input = egui::RawInput {
+                    focused: true,
+                    ..Default::default()
+                };
+                input.screen_rect = Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    egui::vec2(800.0, 600.0),
+                ));
+                input.time = Some(frame as f64 * 0.05);
+                if frame >= 1 {
+                    input.events.push(egui::Event::Text("X".into()));
+                }
+                ctx.begin_frame(input);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let miss = miss.clone();
+                    let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+                        let mut job = crate::markdown::wysiwyg_job(
+                            text,
+                            size,
+                            true,
+                            &miss,
+                            Some(0),
+                            Some((0, 0)),
+                        );
+                        if wrap_width.is_finite() && wrap_width > 0.0 {
+                            job.wrap.max_width = wrap_width;
+                        }
+                        ui.fonts(|f| f.layout_job(job))
+                    };
+                    ui.add(
+                        egui::TextEdit::multiline(&mut text)
+                            .id(egui::Id::new("probe-editor"))
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(10)
+                            .layouter(&mut layouter),
+                    );
+                    // Mirror the app: focus the editor when nothing else has
+                    // focus, so typing always lands in the note.
+                    if ui.memory(|m| m.focused()).is_none() {
+                        ui.memory_mut(|m| m.request_focus(egui::Id::new("probe-editor")));
+                    }
+                    size += 0.0;
+                });
+                let _ = ctx.end_frame();
+            }
+        });
+        assert!(
+            text.contains('X'),
+            "typing was dropped by the concealed-markdown layouter: {text:?}"
+        );
+        assert_eq!(
+            text.matches('X').count(),
+            3,
+            "every typed character should land once: {text:?}"
+        );
     }
 }
