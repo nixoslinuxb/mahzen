@@ -1,6 +1,5 @@
-//! Mahzen — a native, Obsidian-like markdown note taking app whose
-//! contents are encrypted at rest with AES-256-GCM, protected by a master
-//! password (Argon2id-derived key).
+//! Mahzen — a native, Obsidian-like markdown note taking app. Notes are stored
+//! as plain Markdown files inside a vault folder.
 //!
 //! This app is **Wayland-only**: it refuses to start without a Wayland session
 //! and is built without any X11/XCB backend (so XWayland is not used either).
@@ -8,15 +7,14 @@
 mod app;
 mod canvas;
 mod config;
-mod crypto;
 mod dates;
 mod desktop;
-mod feeds;
 mod frontmatter;
 mod graph;
 mod i18n;
 mod icons;
 mod index;
+mod legacy;
 mod markdown;
 mod math;
 mod media;

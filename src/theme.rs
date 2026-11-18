@@ -28,9 +28,6 @@ pub const ACCENT: Color32 = Color32::from_rgb(0x7c, 0x9c, 0xe0);
 pub const ACCENT_2: Color32 = Color32::from_rgb(0x8d, 0x86, 0xd8);
 /// Softer accent for selections / fills.
 pub const ACCENT_SOFT: Color32 = Color32::from_rgb(0x54, 0x58, 0x7d);
-/// Neutral fill for primary buttons.
-pub const PRIMARY: Color32 = Color32::from_rgb(0x3a, 0x3c, 0x48);
-pub const PRIMARY_HOVER: Color32 = Color32::from_rgb(0x45, 0x47, 0x56);
 pub const TEXT: Color32 = Color32::from_rgb(0xdc, 0xdd, 0xe3);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x9a, 0x9d, 0xae);
 pub const LINK: Color32 = Color32::from_rgb(0x7f, 0xa6, 0xe8);

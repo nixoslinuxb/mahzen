@@ -9,12 +9,11 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::canvas;
 use crate::config::{self, Config};
-use crate::crypto::{self, Keyfile, VaultCrypto};
-use crate::feeds;
 use crate::frontmatter;
 use crate::graph;
 use crate::icons::{self, Icon};
 use crate::index::{self, NoteIndex};
+use crate::legacy;
 use crate::markdown;
 use crate::media;
 use crate::palette;
@@ -25,10 +24,15 @@ use crate::theme;
 use crate::vault::{TreeNode, Vault};
 use crate::vim;
 
-/// Refresh results from a background feed fetch.
-type FeedRx = mpsc::Receiver<(u32, Result<(String, Vec<feeds::Item>), String>)>;
 /// Results from a background web-card metadata fetch (url, (title, description)).
 type WebMetaRx = mpsc::Receiver<(String, Result<(String, String), String>)>;
+
+/// One-time conversion of an encrypted (pre-rename) vault to plain Markdown.
+struct LegacyMigration {
+    root: PathBuf,
+    password: String,
+    error: Option<String>,
+}
 
 /// Which direction the Markdown portability dialog is working in.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -297,7 +301,6 @@ enum Command {
     NewFromTemplate,
     NewCanvas,
     OpenCanvas,
-    OpenFeeds,
     Undo,
     Redo,
     WindowMode,
@@ -325,13 +328,12 @@ enum Command {
     PrintExport,
     TogglePanel,
     ToggleGraph,
-    Lock,
     CloseTab,
     Quit,
 }
 
 impl Command {
-    const ALL: [Command; 41] = [
+    const ALL: [Command; 39] = [
         Command::NewNote,
         Command::NewSubnote,
         Command::OpenVault,
@@ -342,7 +344,6 @@ impl Command {
         Command::NewFromTemplate,
         Command::NewCanvas,
         Command::OpenCanvas,
-        Command::OpenFeeds,
         Command::Undo,
         Command::Redo,
         Command::WindowMode,
@@ -370,7 +371,6 @@ impl Command {
         Command::PrintExport,
         Command::TogglePanel,
         Command::ToggleGraph,
-        Command::Lock,
         Command::CloseTab,
         Command::Quit,
     ];
@@ -387,7 +387,6 @@ impl Command {
             Command::NewFromTemplate => crate::tr!("New note from template"),
             Command::NewCanvas => crate::tr!("New canvas"),
             Command::OpenCanvas => crate::tr!("Open canvas board"),
-            Command::OpenFeeds => crate::tr!("RSS feeds"),
             Command::Undo => crate::tr!("Undo"),
             Command::Redo => crate::tr!("Redo"),
             Command::WindowMode => crate::tr!("Cycle window mode (F11)"),
@@ -415,7 +414,6 @@ impl Command {
             Command::PrintExport => crate::tr!("Export current note (PDF / HTML / print)…"),
             Command::TogglePanel => crate::tr!("Toggle side panel"),
             Command::ToggleGraph => crate::tr!("Toggle graph view"),
-            Command::Lock => crate::tr!("Lock the vault"),
             Command::CloseTab => crate::tr!("Close current tab"),
             Command::Quit => crate::tr!("Quit"),
         }
@@ -433,7 +431,6 @@ impl Command {
             Command::NewFromTemplate => Icon::File,
             Command::NewCanvas => Icon::Add,
             Command::OpenCanvas => Icon::Graph,
-            Command::OpenFeeds => Icon::Rss,
             Command::Undo => Icon::Undo,
             Command::Redo => Icon::Redo,
             Command::WindowMode => Icon::PanelRight,
@@ -461,7 +458,6 @@ impl Command {
             Command::PrintExport => Icon::File,
             Command::TogglePanel => Icon::PanelRight,
             Command::ToggleGraph => Icon::Graph,
-            Command::Lock => Icon::Lock,
             Command::CloseTab => Icon::Close,
             Command::Quit => Icon::Close,
         }
@@ -554,36 +550,8 @@ impl DirPicker {
     }
 }
 
-/// The login gate that stands in front of the vault. Notes are only readable
-/// once the master password has been accepted.
-enum Gate {
-    /// No master password configured yet: the user must create one.
-    CreatePassword {
-        password: String,
-        confirm: String,
-        error: Option<String>,
-    },
-    /// A master password exists: the user must enter it.
-    Unlock {
-        password: String,
-        error: Option<String>,
-    },
-    /// Unlocked: normal operation.
-    Open,
-}
-
-/// The action requested by the password screen for this frame.
-enum GateAction {
-    None,
-    Create,
-    Unlock,
-}
-
 pub struct EncryptedNoteApp {
     config: Config,
-    /// Present only while unlocked; dropped (and its key zeroed) on lock/exit.
-    crypto: Option<VaultCrypto>,
-    gate: Gate,
     vault: Option<Vault>,
     tree: TreeNode,
     tabs: Vec<Tab>,
@@ -652,6 +620,8 @@ pub struct EncryptedNoteApp {
     stacked_tabs: bool,
     /// A tab being dragged between panes.
     dragging_tab: Option<usize>,
+    /// Legacy encrypted vault awaiting one-time decryption.
+    legacy_migration: Option<LegacyMigration>,
     /// External-change watcher for the vault.
     watcher: crate::watch::Watcher,
     /// Notes with unsaved edits that also changed on disk (conflict).
@@ -690,21 +660,6 @@ pub struct EncryptedNoteApp {
     table_span: Option<(usize, usize)>,
     /// An open canvas board, if any.
     canvas: Option<CanvasView>,
-    /// The RSS reader.
-    feeds_open: bool,
-    feeds: feeds::Store,
-    feed_sel: Option<u32>,
-    feed_article: Option<usize>,
-    feed_search: String,
-    feed_add_open: bool,
-    feed_url: String,
-    feed_title: String,
-    feed_category: String,
-    feed_edit_id: Option<u32>,
-    feed_delete_id: Option<u32>,
-    /// Refresh results from background threads.
-    feed_rx: Option<FeedRx>,
-    feed_refreshing: bool,
     /// Attachment file chooser.
     attach_picker: Option<FilePicker>,
     /// Canvas PDF card file chooser.
@@ -717,8 +672,6 @@ pub struct EncryptedNoteApp {
     /// PDFs currently being rasterised by pdftoppm.
     canvas_pdf_pending: HashSet<String>,
     /// Full-article fetch results (keyed by link).
-    feed_full_rx: Option<mpsc::Receiver<(String, Result<String, String>)>>,
-    feed_full_loading: Option<String>,
     /// Canvas chooser, when open (`Open canvas board` with >1 board).
     canvas_pick: Option<Vec<PathBuf>>,
     /// Template chooser, when open.
@@ -772,9 +725,6 @@ pub struct EncryptedNoteApp {
     /// Decoded note images, keyed by path (path → GPU texture).
     media_textures: HashMap<PathBuf, egui::TextureHandle>,
 
-    /// Whether the unlock screen's password field is revealed.
-    gate_show: bool,
-
     // Right panel
     show_right: bool,
     backlinks: Vec<(PathBuf, usize, String)>,
@@ -788,10 +738,6 @@ pub struct EncryptedNoteApp {
     rename_target: Option<PathBuf>,
     rename_name: String,
     confirm_delete: Option<PathBuf>,
-    /// Whether the "forgot password" erase-confirmation is showing.
-    confirm_forgot: bool,
-    /// Whether the post-setup "record your password" popup is showing.
-    show_password_warning: bool,
 
     // Deferred actions (applied after the UI closures finish, to keep
     // borrowing simple).
@@ -832,25 +778,8 @@ impl EncryptedNoteApp {
         // Enable SVG (and raster) image loading for the icon set.
         egui_extras::install_image_loaders(&cc.egui_ctx);
 
-        // Decide the initial gate: create a password on first run, otherwise
-        // require the existing one. There is no passwordless path.
-        let gate = if Keyfile::exists() {
-            Gate::Unlock {
-                password: String::new(),
-                error: None,
-            }
-        } else {
-            Gate::CreatePassword {
-                password: String::new(),
-                confirm: String::new(),
-                error: None,
-            }
-        };
-
         let app = EncryptedNoteApp {
             config,
-            crypto: None,
-            gate,
             vault: None,
             tree: TreeNode::default(),
             tabs: Vec::new(),
@@ -897,6 +826,7 @@ impl EncryptedNoteApp {
             tab_seq: 0,
             stacked_tabs: config_stacked,
             dragging_tab: None,
+            legacy_migration: None,
             watcher: crate::watch::Watcher::new(),
             conflicts: HashSet::new(),
             last_watch_poll: 0.0,
@@ -920,19 +850,6 @@ impl EncryptedNoteApp {
             table_rows: Vec::new(),
             table_span: None,
             canvas: None,
-            feeds_open: false,
-            feeds: feeds::Store::load(),
-            feed_sel: None,
-            feed_article: None,
-            feed_search: String::new(),
-            feed_add_open: false,
-            feed_url: String::new(),
-            feed_title: String::new(),
-            feed_category: String::new(),
-            feed_edit_id: None,
-            feed_delete_id: None,
-            feed_rx: None,
-            feed_refreshing: false,
             attach_picker: None,
             canvas_pdf_picker: None,
             canvas_pdf_mode: false,
@@ -940,8 +857,6 @@ impl EncryptedNoteApp {
             canvas_web_rx: None,
             canvas_web_pending: HashSet::new(),
             canvas_pdf_pending: HashSet::new(),
-            feed_full_rx: None,
-            feed_full_loading: None,
             canvas_pick: None,
             template_pick: None,
             daily_settings_open: false,
@@ -973,7 +888,6 @@ impl EncryptedNoteApp {
             player_rendered: false,
             media_layout: media::Layouts::load(),
             media_textures: HashMap::new(),
-            gate_show: false,
             show_right: initial_show_right,
             backlinks: Vec::new(),
             unlinked: Vec::new(),
@@ -984,8 +898,6 @@ impl EncryptedNoteApp {
             rename_target: None,
             rename_name: String::new(),
             confirm_delete: None,
-            confirm_forgot: false,
-            show_password_warning: false,
             pending_open: None,
             pending_open_vault: None,
             status: String::new(),
@@ -1005,43 +917,25 @@ impl EncryptedNoteApp {
 
     // ---------------------------------------------------------------- vault
 
-    /// Read and decrypt a note. Files that are still plaintext markdown (e.g.
-    /// from before encryption was enabled) are accepted as-is.
+    /// Read a note as plain Markdown text.
     fn read_note(&self, path: &Path) -> Option<String> {
         let data = Vault::read_bytes(path).ok()?;
-        if crypto::is_encrypted(&data) {
-            self.crypto.as_ref()?.decrypt(&data)
-        } else {
-            String::from_utf8(data).ok()
-        }
+        String::from_utf8(data).ok()
     }
 
-    /// Encrypt and write a note. Requires the vault to be unlocked.
+    /// Write a note as plain Markdown text.
     fn write_note(&self, path: &Path, text: &str) -> std::io::Result<()> {
-        let crypto = self.crypto.as_ref().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "vault is locked")
-        })?;
-        let blob = crypto.encrypt(text);
-        Vault::write_bytes(path, &blob)
+        Vault::write_bytes(path, text.as_bytes())
     }
 
-    /// Read an attachment, decrypting it when it is one of ours. Plaintext
-    /// files from older versions are accepted as-is (and migrated on unlock).
+    /// Read an attachment.
     fn read_asset(&self, path: &Path) -> Option<Vec<u8>> {
-        let data = Vault::read_bytes(path).ok()?;
-        if crypto::is_encrypted(&data) {
-            self.crypto.as_ref()?.decrypt_bytes(&data)
-        } else {
-            Some(data)
-        }
+        Vault::read_bytes(path).ok()
     }
 
-    /// Write an attachment encrypted with the vault key.
+    /// Write an attachment.
     fn write_asset(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        let c = self.crypto.as_ref().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "vault is locked")
-        })?;
-        Vault::write_bytes(path, &c.encrypt_bytes(bytes))
+        Vault::write_bytes(path, bytes)
     }
 
     /// Write a decrypted copy of a media attachment into the cache directory so
@@ -1074,73 +968,7 @@ impl EncryptedNoteApp {
         Some(out)
     }
 
-    /// Encrypt every plaintext note in the current vault. Runs once after
-    /// unlock so that any legacy/unencrypted files become encrypted at rest.
-    fn migrate_plaintext(&mut self) {
-        let migrated = {
-            let Some(crypto) = self.crypto.as_ref() else {
-                return;
-            };
-            let paths: Vec<PathBuf> = self
-                .vault
-                .as_ref()
-                .map(|v| v.notes.iter().map(|n| n.path.clone()).collect())
-                .unwrap_or_default();
-            let mut count = 0usize;
-            for path in paths {
-                if let Ok(data) = Vault::read_bytes(&path) {
-                    if !crypto::is_encrypted(&data) {
-                        if let Ok(text) = String::from_utf8(data) {
-                            let blob = crypto.encrypt(&text);
-                            if Vault::write_bytes(&path, &blob).is_ok() {
-                                count += 1;
-                            }
-                        }
-                    }
-                }
-            }
-            count
-        };
-        // Same for attachments in `assets/` that are still plaintext.
-        let migrated_assets = {
-            let Some(crypto) = self.crypto.as_ref() else {
-                return;
-            };
-            let mut count = 0usize;
-            if let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) {
-                let assets = root.join("assets");
-                if let Ok(entries) = fs::read_dir(&assets) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if !path.is_file() {
-                            continue;
-                        }
-                        if let Ok(data) = Vault::read_bytes(&path) {
-                            if !crypto::is_encrypted(&data) {
-                                let blob = crypto.encrypt_bytes(&data);
-                                if Vault::write_bytes(&path, &blob).is_ok() {
-                                    count += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            count
-        };
-        match (migrated, migrated_assets) {
-            (0, 0) => {}
-            (n, 0) => self.status = format!("Encrypted {n} pre-existing note(s)"),
-            (0, a) => self.status = format!("Encrypted {a} pre-existing attachment(s)"),
-            (n, a) => self.status = format!("Encrypted {n} note(s) and {a} attachment(s)"),
-        }
-    }
-
     fn open_vault(&mut self, path: PathBuf) {
-        if self.crypto.is_none() {
-            self.status = "Unlock first".into();
-            return;
-        }
         match Vault::open(path.clone()) {
             Ok(vault) => {
                 self.vault = Some(vault);
@@ -1154,8 +982,6 @@ impl EncryptedNoteApp {
                 self.watcher.clear();
                 self.conflicts.clear();
                 self.status = "Vault opened".to_string();
-                // Encrypt any pre-existing plaintext notes in this vault.
-                self.migrate_plaintext();
                 // Restore previously-open tabs that belong to this vault.
                 let root = self
                     .vault
@@ -1349,7 +1175,8 @@ impl EncryptedNoteApp {
                 self.active = self.tabs.len() - 1;
             }
             None => {
-                self.status = "Could not open note — wrong password or corrupted file".into();
+                self.status =
+                    crate::tr!("Could not open note — the file is not valid UTF-8").into();
             }
         }
     }
@@ -1796,7 +1623,7 @@ impl EncryptedNoteApp {
                 notes.push((rel, text));
             }
         }
-        // Copy attachments (they live outside the encrypted note set).
+        // Copy attachments alongside the notes.
         // Attachments are decrypted on the way out so the export is readable.
         let mut assets: Vec<(PathBuf, Vec<u8>)> = Vec::new();
         let assets_dir = root.join("assets");
@@ -1840,24 +1667,20 @@ impl EncryptedNoteApp {
                 return;
             }
         }
-        let (files, assets) = portability::scan_import(src, crypto::MAGIC);
+        let (files, assets) = portability::scan_import(src);
         if files.is_empty() {
             self.portability_error = Some(crate::tr!("No Markdown files found").into());
             return;
         }
-        // Phase 1: read + decrypt every note (immutable borrows only).
+        // Read every note as plain text.
         let texts: Vec<Option<String>> = files
             .iter()
             .map(|file| {
                 let bytes = std::fs::read(&file.source).ok()?;
-                if file.encrypted {
-                    self.crypto.as_ref()?.decrypt(&bytes)
-                } else {
-                    String::from_utf8(bytes).ok()
-                }
+                String::from_utf8(bytes).ok()
             })
             .collect();
-        // Phase 2: write them encrypted into the vault (immutable borrow).
+        // Write them into the vault.
         let mut report = portability::ImportReport::default();
         for (file, text) in files.iter().zip(texts) {
             let Some(text) = text else {
@@ -1868,11 +1691,7 @@ impl EncryptedNoteApp {
                 continue;
             };
             let dest = portability::unique_target(&root, &file.rel);
-            let Some(c) = self.crypto.as_ref() else {
-                self.portability_error = Some(crate::tr!("Vault is locked").into());
-                return;
-            };
-            match Vault::write_bytes(&dest, &c.encrypt(&text)) {
+            match Vault::write_bytes(&dest, text.as_bytes()) {
                 Ok(()) => report.notes += 1,
                 Err(e) => {
                     report.skipped += 1;
@@ -2165,15 +1984,10 @@ impl EncryptedNoteApp {
             } else {
                 self.composer_target.trim().to_string()
             };
-            let Some(crypto) = self.crypto.as_ref() else {
-                self.composer_error = Some(crate::tr!("Vault is locked").into());
-                return;
-            };
-            let contents = crypto.encrypt(&tail);
             let created = self
                 .vault
                 .as_ref()
-                .and_then(|v| v.create_note(&name, &contents).ok());
+                .and_then(|v| v.create_note(&name, tail.as_bytes()).ok());
             match created {
                 Some(path) => {
                     let _ = self.write_note(&source_path, &head);
@@ -2216,7 +2030,7 @@ impl EncryptedNoteApp {
                 self.status = "Recording failed (is ffmpeg installed?)".into();
                 return;
             }
-            // ffmpeg wrote a plaintext file: encrypt it in place.
+            // ffmpeg writes the file directly; nothing more to do.
             if let Ok(bytes) = fs::read(&path) {
                 let _ = self.write_asset(&path, &bytes);
             }
@@ -2478,16 +2292,12 @@ impl EncryptedNoteApp {
             self.status = crate::tr!("Enter a note name").into();
             return false;
         }
-        let Some(crypto) = self.crypto.as_ref() else {
-            self.status = "Unlock first".into();
-            return false;
-        };
         let stem = Vault::sanitize_name(name);
-        let contents = crypto.encrypt(&format!("# {stem}\n\n"));
+        let contents = format!("# {stem}\n\n");
         let created = self
             .vault
             .as_ref()
-            .and_then(|v| v.create_note(name, &contents).ok());
+            .and_then(|v| v.create_note(name, contents.as_bytes()).ok());
         match created {
             Some(path) => {
                 self.refresh_vault();
@@ -2513,10 +2323,6 @@ impl EncryptedNoteApp {
             self.status = crate::tr!("Enter a sub-note name").into();
             return false;
         }
-        let Some(crypto) = self.crypto.as_ref() else {
-            self.status = "Unlock first".into();
-            return false;
-        };
         let stem = Vault::sanitize_name(name);
         // The child folder sits next to the parent note, named after it.
         let folder = parent.with_extension("");
@@ -2526,8 +2332,7 @@ impl EncryptedNoteApp {
             path = folder.join(format!("{stem} {counter}.md"));
             counter += 1;
         }
-        let blob = crypto.encrypt(&format!("# {stem}\n\n"));
-        if let Err(e) = Vault::write_bytes(&path, &blob) {
+        if let Err(e) = Vault::write_bytes(&path, format!("# {stem}\n\n").as_bytes()) {
             self.status = format!("Create sub-note failed: {e}");
             return false;
         }
@@ -2840,7 +2645,6 @@ impl EncryptedNoteApp {
                 self.new_canvas_name.clear();
             }
             Command::OpenCanvas => self.open_canvas(),
-            Command::OpenFeeds => self.feeds_open = true,
             Command::Undo => self.undo(),
             Command::Redo => self.redo(),
             Command::WindowMode => {
@@ -2948,7 +2752,6 @@ impl EncryptedNoteApp {
             }
             Command::TogglePanel => self.show_right = !self.show_right,
             Command::ToggleGraph => self.show_graph = !self.show_graph,
-            Command::Lock => self.lock(),
             Command::CloseTab => {
                 if !self.tabs.is_empty() {
                     self.close_tab(self.active);
@@ -2982,10 +2785,7 @@ impl EncryptedNoteApp {
         if !path.exists() {
             let title = crate::dates::format(&fmt, y, m, d);
             let body = self.daily_note_body(&title, (y, m, d));
-            if let Some(crypto) = self.crypto.as_ref() {
-                let blob = crypto.encrypt(&body);
-                let _ = Vault::write_bytes(&path, &blob);
-            }
+            let _ = Vault::write_bytes(&path, body.as_bytes());
         }
         self.refresh_vault();
         self.open_note(path);
@@ -3030,17 +2830,10 @@ impl EncryptedNoteApp {
         let (y, m, d) = crate::dates::today();
         let name = format!("{stem} {}", crate::dates::format("YYYY-MM-DD", y, m, d));
         let body = crate::dates::expand(&meta.body, &name, (y, m, d), "YYYY-MM-DD");
-        let contents = match self.crypto.as_ref() {
-            Some(c) => c.encrypt(&body),
-            None => {
-                self.status = "Unlock first".into();
-                return;
-            }
-        };
         let created = self
             .vault
             .as_ref()
-            .and_then(|v| v.create_note(&name, &contents).ok());
+            .and_then(|v| v.create_note(&name, body.as_bytes()).ok());
         match created {
             Some(path) => {
                 self.refresh_vault();
@@ -3142,23 +2935,16 @@ impl EncryptedNoteApp {
         }
     }
 
-    /// Read a canvas (decrypting if it's one of ours, else parsing plain JSON).
+    /// Read a `.canvas` JSON board.
     fn read_canvas(&self, path: &Path) -> Option<canvas::Canvas> {
         let bytes = Vault::read_bytes(path).ok()?;
-        let json = if crypto::is_encrypted(&bytes) {
-            self.crypto.as_ref()?.decrypt(&bytes)?
-        } else {
-            String::from_utf8(bytes).ok()?
-        };
+        let json = String::from_utf8(bytes).ok()?;
         serde_json::from_str(&json).ok()
     }
 
     fn write_canvas(&self, path: &Path, data: &canvas::Canvas) -> std::io::Result<()> {
-        let crypto = self.crypto.as_ref().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "vault is locked")
-        })?;
         let json = serde_json::to_string_pretty(data)?;
-        Vault::write_bytes(path, &crypto.encrypt(&json))
+        Vault::write_bytes(path, json.as_bytes())
     }
 
     /// Fetch a web card's title/description in the background (via curl).
@@ -4124,700 +3910,7 @@ impl EncryptedNoteApp {
         }
     }
 
-    // --------------------------------------------------------------- feeds
-
     /// Refresh every feed in a background thread.
-    fn refresh_feeds(&mut self) {
-        if self.feed_refreshing {
-            return;
-        }
-        let urls: Vec<(u32, String)> = self
-            .feeds
-            .feeds
-            .iter()
-            .map(|f| (f.id, f.url.clone()))
-            .collect();
-        if urls.is_empty() {
-            self.status = "No feeds yet — add one".into();
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        self.feed_rx = Some(rx);
-        self.feed_refreshing = true;
-        std::thread::spawn(move || {
-            for (id, url) in urls {
-                let res = feeds::fetch(&url);
-                if tx.send((id, res)).is_err() {
-                    break;
-                }
-            }
-        });
-        self.status = "Refreshing feeds…".into();
-    }
-
-    fn poll_feeds(&mut self) {
-        let mut finished = false;
-        if let Some(rx) = &self.feed_rx {
-            loop {
-                match rx.try_recv() {
-                    Ok((id, res)) => {
-                        if let Some(f) = self.feeds.find_mut(id) {
-                            match res {
-                                Ok((title, items)) => {
-                                    if f.title.trim().is_empty() && !title.is_empty() {
-                                        f.title = title;
-                                    }
-                                    f.items = items;
-                                    f.error.clear();
-                                }
-                                Err(e) => f.error = e,
-                            }
-                        }
-                    }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        finished = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if finished {
-            self.feed_rx = None;
-            self.feed_refreshing = false;
-            self.feeds.save();
-            self.status = "Feeds updated".into();
-        }
-    }
-
-    /// Start fetching the full text of an article (in the background).
-    fn load_full_article(&mut self, link: &str) {
-        if link.is_empty() || self.feed_full_rx.is_some() {
-            return;
-        }
-        let (tx, rx) = mpsc::channel();
-        self.feed_full_rx = Some(rx);
-        self.feed_full_loading = Some(link.to_string());
-        let link = link.to_string();
-        std::thread::spawn(move || {
-            let res = feeds::fetch_article(&link);
-            let _ = tx.send((link, res));
-        });
-        self.status = "Loading full article…".into();
-    }
-
-    fn poll_full_article(&mut self) {
-        let mut done = false;
-        if let Some(rx) = &self.feed_full_rx {
-            match rx.try_recv() {
-                Ok((link, res)) => {
-                    match res {
-                        Ok(text) => {
-                            for f in &mut self.feeds.feeds {
-                                for it in &mut f.items {
-                                    if it.link == link {
-                                        it.full = text.clone();
-                                    }
-                                }
-                            }
-                            for it in &mut self.feeds.saved {
-                                if it.link == link {
-                                    it.full = text.clone();
-                                }
-                            }
-                            self.feeds.save();
-                            self.status = "Loaded full article".into();
-                        }
-                        Err(e) => self.status = format!("Could not load article: {e}"),
-                    }
-                    done = true;
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => done = true,
-            }
-        }
-        if done {
-            self.feed_full_rx = None;
-            self.feed_full_loading = None;
-        }
-    }
-
-    fn feeds_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            icons::icon(ui, Icon::Rss, 16.0, theme::ACCENT);
-            ui.label(RichText::new(crate::tr!("RSS feeds")).strong());
-            ui.separator();
-            if icons::button(
-                ui,
-                Icon::Refresh,
-                16.0,
-                !self.feed_refreshing,
-                self.feed_refreshing,
-                "Refresh all feeds",
-            )
-            .clicked()
-            {
-                self.refresh_feeds();
-            }
-            if icons::button(ui, Icon::Add, 16.0, true, false, crate::tr!("Add feed")).clicked() {
-                self.feed_add_open = true;
-                self.feed_url.clear();
-                self.feed_title.clear();
-                self.feed_category.clear();
-            }
-            ui.separator();
-            icons::icon(ui, Icon::Search, 14.0, ui.visuals().weak_text_color());
-            ui.add(
-                egui::TextEdit::singleline(&mut self.feed_search)
-                    .hint_text("search all articles…")
-                    .desired_width(240.0),
-            );
-            if !self.feed_search.is_empty()
-                && icons::button(ui, Icon::Close, 14.0, true, false, "Clear search").clicked()
-            {
-                self.feed_search.clear();
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icons::button(ui, Icon::Close, 16.0, true, false, "Close feeds").clicked() {
-                    self.feeds_open = false;
-                }
-                ui.weak(format!("{} feed(s)", self.feeds.feeds.len()));
-            });
-        });
-        ui.separator();
-
-        egui::SidePanel::left("feeds_list")
-            .resizable(true)
-            .default_width(260.0)
-            .show_inside(ui, |ui| self.feed_list_ui(ui));
-        self.feed_articles_ui(ui);
-    }
-
-    fn feed_list_ui(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(4.0);
-        let cats = self.feeds.categories();
-        let mut groups: Vec<(String, Vec<u32>)> = Vec::new();
-        for c in cats {
-            let ids = self
-                .feeds
-                .feeds
-                .iter()
-                .filter(|f| f.category == c)
-                .map(|f| f.id)
-                .collect();
-            groups.push((c, ids));
-        }
-        let uncat: Vec<u32> = self
-            .feeds
-            .feeds
-            .iter()
-            .filter(|f| f.category.trim().is_empty())
-            .map(|f| f.id)
-            .collect();
-        if !uncat.is_empty() {
-            groups.push((String::new(), uncat));
-        }
-
-        let mut select: Option<u32> = None;
-        let mut edit: Option<u32> = None;
-        let mut del: Option<u32> = None;
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                // Saved articles (pseudo-feed), shown as icon + count.
-                let saved_sel = self.feed_sel == Some(0);
-                let count = self.feeds.saved.len();
-                let saved_color = if saved_sel {
-                    theme::ACCENT
-                } else {
-                    ui.visuals().weak_text_color()
-                };
-                ui.horizontal(|ui| {
-                    icons::icon(ui, Icon::Bookmark, 13.0, saved_color);
-                    if ui
-                        .selectable_label(saved_sel, RichText::new(count.to_string()).strong())
-                        .on_hover_text("Saved articles")
-                        .clicked()
-                    {
-                        select = Some(0);
-                    }
-                });
-                ui.separator();
-                if self.feeds.feeds.is_empty() {
-                    ui.add_space(6.0);
-                    ui.weak(crate::tr!("No feeds yet. Use ＋ to add one."));
-                }
-                for (cat, ids) in groups {
-                    let heading = if cat.trim().is_empty() {
-                        "Uncategorized".to_string()
-                    } else {
-                        cat.clone()
-                    };
-                    egui::CollapsingHeader::new(RichText::new(heading).strong())
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            for id in ids {
-                                let Some(f) = self.feeds.find(id) else {
-                                    continue;
-                                };
-                                let title = if f.title.trim().is_empty() {
-                                    f.url.clone()
-                                } else {
-                                    f.title.clone()
-                                };
-                                let sel = self.feed_sel == Some(id);
-                                let row = egui::Rect::from_min_size(
-                                    ui.next_widget_position(),
-                                    egui::vec2(ui.available_width(), 20.0),
-                                );
-                                let hovered = ui
-                                    .input(|i| i.pointer.hover_pos())
-                                    .is_some_and(|p| row.contains(p));
-                                ui.horizontal(|ui| {
-                                    icons::icon(
-                                        ui,
-                                        Icon::Rss,
-                                        13.0,
-                                        if sel {
-                                            theme::ACCENT
-                                        } else {
-                                            ui.visuals().weak_text_color()
-                                        },
-                                    );
-                                    if ui.selectable_label(sel, RichText::new(title)).clicked() {
-                                        select = Some(id);
-                                    }
-                                    if hovered {
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if icons::button(
-                                                    ui,
-                                                    Icon::Trash,
-                                                    13.0,
-                                                    true,
-                                                    false,
-                                                    "Delete feed",
-                                                )
-                                                .clicked()
-                                                {
-                                                    del = Some(id);
-                                                }
-                                                if icons::button(
-                                                    ui,
-                                                    Icon::Edit,
-                                                    13.0,
-                                                    true,
-                                                    false,
-                                                    "Edit feed",
-                                                )
-                                                .clicked()
-                                                {
-                                                    edit = Some(id);
-                                                }
-                                            },
-                                        );
-                                    }
-                                });
-                            }
-                        });
-                }
-            });
-
-        if let Some(id) = select {
-            self.feed_sel = Some(id);
-            self.feed_article = None;
-        }
-        if let Some(id) = edit {
-            if let Some(f) = self.feeds.find(id) {
-                self.feed_edit_id = Some(id);
-                self.feed_url = f.url.clone();
-                self.feed_title = f.title.clone();
-                self.feed_category = f.category.clone();
-            }
-        }
-        if let Some(id) = del {
-            self.feed_delete_id = Some(id);
-        }
-    }
-
-    fn feed_articles_ui(&mut self, ui: &mut egui::Ui) {
-        // Global search across every feed's articles.
-        if !self.feed_search.trim().is_empty() {
-            let q = self.feed_search.trim().to_ascii_lowercase();
-            let mut hits: Vec<(u32, usize, String, String)> = Vec::new();
-            for f in &self.feeds.feeds {
-                for (i, it) in f.items.iter().enumerate() {
-                    if it.title.to_ascii_lowercase().contains(&q)
-                        || it.text.to_ascii_lowercase().contains(&q)
-                    {
-                        let feed = if f.title.trim().is_empty() {
-                            f.url.clone()
-                        } else {
-                            f.title.clone()
-                        };
-                        hits.push((f.id, i, it.title.clone(), feed));
-                    }
-                }
-            }
-            ui.label(
-                RichText::new(format!("{} result(s)", hits.len()))
-                    .weak()
-                    .small(),
-            );
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for (fid, idx, title, feed) in hits {
-                        let clicked = ui
-                            .horizontal(|ui| {
-                                icons::icon(ui, Icon::Rss, 13.0, ui.visuals().weak_text_color());
-                                ui.add(egui::Button::new(title).frame(false)).clicked()
-                            })
-                            .inner;
-                        if clicked {
-                            self.feed_sel = Some(fid);
-                            self.feed_article = Some(idx);
-                        }
-                        ui.label(RichText::new(feed).weak().small());
-                        ui.separator();
-                    }
-                });
-            return;
-        }
-
-        let Some(fid) = self.feed_sel else {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.weak("Select a feed to read its articles"));
-            return;
-        };
-
-        // Article list.
-        egui::SidePanel::left("feed_articles")
-            .resizable(true)
-            .default_width(320.0)
-            .show_inside(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let items: Vec<(usize, String, String)> = if fid == 0 {
-                            self.feeds
-                                .saved
-                                .iter()
-                                .enumerate()
-                                .map(|(i, it)| (i, it.title.clone(), it.date.clone()))
-                                .collect()
-                        } else {
-                            self.feeds
-                                .find(fid)
-                                .map(|f| {
-                                    f.items
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, it)| (i, it.title.clone(), it.date.clone()))
-                                        .collect()
-                                })
-                                .unwrap_or_default()
-                        };
-                        if fid != 0 {
-                            if let Some(f) = self.feeds.find(fid) {
-                                if !f.error.is_empty() {
-                                    ui.colored_label(theme::DANGER, f.error.clone());
-                                }
-                            }
-                        }
-                        if items.is_empty() {
-                            ui.add_space(8.0);
-                            ui.weak(if fid == 0 {
-                                crate::tr!("No saved articles yet — press the bookmark icon on an article.")
-                            } else {
-                                "No articles — press Refresh."
-                            });
-                        }
-                        for (i, title, date) in items {
-                            let sel = self.feed_article == Some(i);
-                            if ui
-                                .selectable_label(sel, RichText::new(title).strong())
-                                .clicked()
-                            {
-                                self.feed_article = Some(i);
-                            }
-                            if !date.is_empty() {
-                                ui.label(RichText::new(date).weak().small());
-                            }
-                            ui.separator();
-                        }
-                    });
-            });
-
-        self.feed_reader_ui(ui, fid);
-    }
-
-    fn feed_reader_ui(&mut self, ui: &mut egui::Ui, fid: u32) {
-        let Some(idx) = self.feed_article else {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.weak("Select an article to read"));
-            return;
-        };
-        let item = if fid == 0 {
-            self.feeds.saved.get(idx).cloned()
-        } else {
-            self.feeds.find(fid).and_then(|f| f.items.get(idx).cloned())
-        };
-        let Some(item) = item else {
-            return;
-        };
-        let is_saved = self.feeds.is_saved(&item);
-        let mut save_toggle = false;
-        let mut load_full = false;
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&item.title).size(22.0).strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(
-                            ui,
-                            Icon::Bookmark,
-                            20.0,
-                            true,
-                            is_saved,
-                            if is_saved {
-                                "Saved — click to remove"
-                            } else {
-                                "Save article"
-                            },
-                        )
-                        .clicked()
-                        {
-                            save_toggle = true;
-                        }
-                    });
-                });
-                if !item.date.is_empty() {
-                    ui.add_space(2.0);
-                    ui.label(RichText::new(&item.date).weak().small());
-                }
-                ui.add_space(12.0);
-
-                // Full article text (paragraph-styled).
-                let body = if item.full.is_empty() {
-                    item.text.clone()
-                } else {
-                    item.full.clone()
-                };
-                if body.is_empty() {
-                    ui.weak("No text content in this item.");
-                } else {
-                    // A comfortable reading column (max ~720 px, centred) with
-                    // generous paragraph spacing.
-                    let size = self.config.font_size + 2.0;
-                    let width = ui.available_width();
-                    let col = width.min(720.0);
-                    ui.horizontal(|ui| {
-                        ui.add_space(((width - col) * 0.5).max(0.0));
-                        ui.vertical(|ui| {
-                            ui.set_max_width(col);
-                            for para in body.split('\n') {
-                                if para.trim().is_empty() {
-                                    ui.add_space(6.0);
-                                } else {
-                                    ui.add(
-                                        egui::Label::new(RichText::new(para).size(size)).wrap(true),
-                                    );
-                                    ui.add_space(10.0);
-                                }
-                            }
-                        });
-                    });
-                }
-
-                // Offer to fetch the full article when we only have a summary.
-                if item.full.is_empty() && !item.link.is_empty() {
-                    ui.add_space(2.0);
-                    let loading = self.feed_full_loading.as_deref() == Some(item.link.as_str());
-                    if icons::button(
-                        ui,
-                        Icon::Rss,
-                        16.0,
-                        !loading,
-                        false,
-                        "Load the full article text",
-                    )
-                    .clicked()
-                    {
-                        load_full = true;
-                    }
-                    ui.label(
-                        RichText::new(if loading {
-                            "Loading full article…"
-                        } else {
-                            "Load full article"
-                        })
-                        .small()
-                        .weak(),
-                    );
-                    ui.add_space(10.0);
-                }
-
-                // The article link, below the text, as a modern clickable row.
-                ui.add_space(6.0);
-                if !item.link.is_empty() {
-                    link_row(ui, &item.link, "Read the full article");
-                    ui.add_space(6.0);
-                }
-                ui.add_space(12.0);
-            });
-
-        if save_toggle {
-            self.feeds.toggle_saved(&item);
-            self.feeds.save();
-            if fid == 0 && is_saved {
-                // Removed from the saved list while viewing it.
-                self.feed_article = None;
-            }
-        }
-        if load_full {
-            self.load_full_article(&item.link.clone());
-        }
-    }
-
-    /// Add / edit / delete feed dialogs.
-    fn feeds_dialogs(&mut self, ctx: &egui::Context) {
-        // Add or edit.
-        if self.feed_add_open || self.feed_edit_id.is_some() {
-            let editing = self.feed_edit_id.is_some();
-            let mut submit = false;
-            let mut cancel = false;
-            egui::Window::new(crate::tr!("Feed"))
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.set_width(420.0);
-                    ui.label(
-                        RichText::new(if editing { "Edit feed" } else { "Add feed" }).strong(),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Feed URL").small().weak());
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.feed_url)
-                            .hint_text("https://example.com/feed.xml")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Title (optional)").small().weak());
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.feed_title)
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new(crate::tr!("Category (optional)"))
-                            .small()
-                            .weak(),
-                    );
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.feed_category)
-                            .hint_text("News, Tech, …")
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if icons::button(ui, Icon::Check, 20.0, true, false, crate::tr!("Save"))
-                            .clicked()
-                        {
-                            submit = true;
-                        }
-                        if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
-                            .clicked()
-                        {
-                            cancel = true;
-                        }
-                    });
-                });
-            let _ = editing;
-            if submit {
-                let url = self.feed_url.trim().to_string();
-                if url.is_empty() {
-                    self.status = "Feed URL is required".into();
-                } else if let Some(id) = self.feed_edit_id {
-                    if let Some(f) = self.feeds.find_mut(id) {
-                        f.url = url;
-                        f.title = self.feed_title.clone();
-                        f.category = self.feed_category.clone();
-                        f.error.clear();
-                    }
-                    self.feeds.save();
-                    self.feed_edit_id = None;
-                    self.refresh_feeds();
-                } else {
-                    self.feeds
-                        .add(&url, self.feed_title.trim(), self.feed_category.trim());
-                    self.feeds.save();
-                    self.feed_add_open = false;
-                    self.refresh_feeds();
-                }
-            }
-            if cancel {
-                self.feed_add_open = false;
-                self.feed_edit_id = None;
-            }
-        }
-
-        // Delete confirmation.
-        if let Some(id) = self.feed_delete_id {
-            let name = self
-                .feeds
-                .find(id)
-                .map(|f| {
-                    if f.title.trim().is_empty() {
-                        f.url.clone()
-                    } else {
-                        f.title.clone()
-                    }
-                })
-                .unwrap_or_default();
-            let mut confirm = false;
-            let mut cancel = false;
-            egui::Window::new(crate::tr!("Delete feed"))
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.label(format!("Remove feed '{name}'?"));
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if icons::danger_button(ui, Icon::Trash, 20.0, true, crate::tr!("Delete"))
-                            .clicked()
-                        {
-                            confirm = true;
-                        }
-                        if icons::button(ui, Icon::Close, 20.0, true, false, crate::tr!("Cancel"))
-                            .clicked()
-                        {
-                            cancel = true;
-                        }
-                    });
-                });
-            if confirm {
-                self.feeds.remove(id);
-                self.feeds.save();
-                if self.feed_sel == Some(id) {
-                    self.feed_sel = None;
-                    self.feed_article = None;
-                }
-                self.feed_delete_id = None;
-            } else if cancel {
-                self.feed_delete_id = None;
-            }
-        }
-    }
-
-    // ------------------------------------------------------------ attachments
-
     fn open_attach_picker(&mut self, kind: AttachKind) {
         self.attach_picker = Some(FilePicker::new(kind.start_dir(), kind));
     }
@@ -5232,8 +4325,8 @@ impl EncryptedNoteApp {
     /// already playing.
     fn start_media(&mut self, path: &Path, video: bool) {
         self.stop_media();
-        // Attachments are encrypted on disk: hand external tools a decrypted
-        // copy from the cache, but keep `path` as the playback identity.
+        // Hand external tools a working copy from the cache, but keep `path`
+        // as the playback identity.
         let Some(source) = self.materialize_media(path) else {
             self.status = crate::tr!("Could not read the attachment").into();
             return;
@@ -5344,612 +4437,127 @@ impl EncryptedNoteApp {
         }
     }
 
-    // ----------------------------------------------------------------- gate
-
-    /// Drop the key and all decrypted state, returning to the unlock screen.
-    /// Remove decrypted media copies from the runtime cache.
-    fn clear_media_cache(&self) {
-        let cache = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(config::dir)
-            .join("mahzen-media");
-        let _ = fs::remove_dir_all(cache);
-    }
-
-    fn lock(&mut self) {
-        self.save_all();
-        self.stop_media();
-        self.clear_media_cache();
-        // Clear decrypted secrets from memory.
-        self.media_textures.clear();
-        self.crypto = None;
-        self.tabs.clear();
-        self.active = 0;
-        self.backlinks.clear();
-        self.last_active = None;
-        self.gate = Gate::Unlock {
-            password: String::new(),
-            error: None,
-        };
-        self.status = crate::tr!("Locked").into();
-    }
-
-    /// After a successful unlock, reopen the last vault.
-    fn after_unlock(&mut self) {
-        if let Some(path) = self.config.last_vault.clone() {
-            if path.is_dir() {
-                self.open_vault(path);
-            }
-        }
-    }
-
-    /// Validate and install a new master password on first run.
-    fn try_create_password(&mut self) {
-        let (password, confirm) = match &self.gate {
-            Gate::CreatePassword {
-                password, confirm, ..
-            } => (password.clone(), confirm.clone()),
-            _ => return,
-        };
-        let problems = Keyfile::password_problems(&password);
-        let error = if !problems.is_empty() {
-            Some(format!("Password {}", problems.join(", ")))
-        } else if password != confirm {
-            Some("Passwords do not match".to_string())
-        } else {
-            None
-        };
-        if let Some(error) = error {
-            if let Gate::CreatePassword { error: slot, .. } = &mut self.gate {
-                *slot = Some(error);
-            }
+    /// One-time screen that converts an old encrypted vault to plain Markdown.
+    fn legacy_migration_ui(&mut self, ctx: &egui::Context) {
+        let Some(mut mig) = self.legacy_migration.take() else {
             return;
-        }
-        match VaultCrypto::create(&password) {
-            Ok((keyfile, crypto)) => {
-                if let Err(e) = keyfile.save() {
-                    if let Gate::CreatePassword { error: slot, .. } = &mut self.gate {
-                        *slot = Some(format!("Could not save keyfile: {e}"));
-                    }
-                    return;
-                }
-                self.crypto = Some(crypto);
-                self.config.reset_lockout();
-                self.config.save();
-                // Do not open the vault yet: show the "record your password"
-                // popup first. The vault opens when the user presses OK.
-                self.show_password_warning = true;
-                self.status = "Master password set".into();
-            }
-            Err(e) => {
-                if let Gate::CreatePassword { error: slot, .. } = &mut self.gate {
-                    *slot = Some(format!("Key derivation failed: {e}"));
-                }
-            }
-        }
-    }
-
-    /// Verify an entered password against the keyfile.
-    fn try_unlock(&mut self) {
-        let password = match &self.gate {
-            Gate::Unlock { password, .. } => password.clone(),
-            _ => return,
         };
-        let now = config::now_unix();
-        if self.config.lockout_remaining(now).is_some() {
-            return; // Still locked out.
-        }
-        let keyfile = match Keyfile::load() {
-            Some(kf) => kf,
-            None => {
-                if let Gate::Unlock { error, .. } = &mut self.gate {
-                    *error = Some("Keyfile missing; cannot unlock".into());
-                }
-                return;
-            }
-        };
-        match VaultCrypto::unlock(&password, &keyfile) {
-            Some(crypto) => {
-                self.crypto = Some(crypto);
-                self.config.reset_lockout();
-                self.config.save();
-                self.gate = Gate::Open;
-                self.status = "Unlocked".into();
-                self.after_unlock();
-            }
-            None => self.register_failed_attempt(),
-        }
-    }
-
-    /// Record a failed unlock and, if the threshold is reached, arm a lockout
-    /// with an exponentially increasing duration.
-    fn register_failed_attempt(&mut self) {
-        const THRESHOLD: u32 = 5;
-        let message = match self.config.register_failure(THRESHOLD) {
-            Some(minutes) => {
-                format!("Too many incorrect attempts — locked for {minutes} minute(s).")
-            }
-            None => {
-                let left = THRESHOLD.saturating_sub(self.config.failed_attempts);
-                format!("Incorrect password. {left} attempt(s) before lockout.")
-            }
-        };
-        self.gate = Gate::Unlock {
-            password: String::new(),
-            error: Some(message),
-        };
-        self.config.save();
-    }
-
-    /// Close the "record your password" popup and open the vault. On first run
-    /// there's no vault yet, so we prompt the user to choose a folder.
-    fn dismiss_password_warning(&mut self) {
-        self.show_password_warning = false;
-        self.gate = Gate::Open;
-        self.after_unlock();
-        if self.vault.is_none() {
-            self.open_picker();
-            self.status = crate::tr!("Choose a folder to use as your vault").into();
-        }
-    }
-
-    /// The post-setup popup: a modern card warning that the master password
-    /// cannot be recovered, with an OK icon at the bottom-right that opens the
-    /// vault.
-    fn password_warning_ui(&mut self, ctx: &egui::Context) {
-        let mut ok = false;
-        let shadow = egui::epaint::Shadow {
-            offset: egui::vec2(0.0, 12.0),
-            blur: 34.0,
-            spread: 0.0,
-            color: Color32::from_black_alpha(190),
-        };
-        let card = egui::Frame::none()
-            .fill(theme::PANEL)
-            .rounding(egui::Rounding::same(18.0))
-            .stroke(egui::Stroke::new(
-                1.0_f32,
-                theme::ACCENT.linear_multiply(0.6),
-            ))
-            .shadow(shadow)
-            .inner_margin(egui::Margin::same(30.0));
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Dim the background so the popup reads as a modal.
-            let rect = ui.max_rect();
-            ui.painter()
-                .rect_filled(rect, 0.0, Color32::from_black_alpha(150));
-            ui.add_space(96.0);
-            ui.vertical_centered(|ui| {
-                card.show(ui, |ui| {
-                    ui.set_width(430.0);
-                    ui.vertical_centered(|ui| {
-                        icons::icon(ui, Icon::Warning, 44.0, Color32::from_rgb(0xf9, 0xe2, 0xaf));
-                        ui.add_space(12.0);
-                        ui.label(
-                            RichText::new(crate::tr!("Record your master password"))
-                                .size(22.0)
-                                .strong(),
-                        );
-                    });
-                    ui.add_space(14.0);
+        let mut convert = false;
+        let mut skip = false;
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::none()
+                    .fill(theme::BASE)
+                    .inner_margin(egui::Margin::same(28.0)),
+            )
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(RichText::new("Mahzen").size(30.0).strong());
+                    ui.add_space(6.0);
                     ui.label(
-                        RichText::new(
-                            "Store this password somewhere safe right now — a notebook, \
-                             or written down and kept secure. It is the only key to your notes.",
-                        )
-                        .size(14.0),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(
-                            "If you lose it, your notes cannot be recovered. There is no reset \
-                             and no one who can unlock them for you.",
-                        )
-                        .size(14.0)
-                        .color(theme::DANGER),
+                        RichText::new(crate::tr!("This vault still uses the old encrypted format"))
+                            .size(15.0)
+                            .color(theme::TEXT_MUTED),
                     );
                     ui.add_space(20.0);
-                    // OK icon, bottom-right edge of the card.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if icons::button(
-                            ui,
-                            Icon::Check,
-                            28.0,
-                            true,
-                            true,
-                            "OK — choose your vault folder",
-                        )
-                        .clicked()
-                        {
-                            ok = true;
-                        }
-                    });
                 });
-            });
-        });
-
-        if ok {
-            self.dismiss_password_warning();
-        }
-    }
-
-    /// Full-window password screen shown while locked.
-    fn gate_ui(&mut self, ctx: &egui::Context) {
-        let now = config::now_unix();
-        let locked = self.config.lockout_remaining(now);
-        let total =
-            (Config::lockout_minutes(self.config.lockout_step.saturating_sub(1)) * 60).max(1);
-        let fraction = locked
-            .map(|s| (s as f32 / total as f32).clamp(0.0, 1.0))
-            .unwrap_or(0.0);
-        let time = ctx.input(|i| i.time);
-        let mut action = GateAction::None;
-        let mut forgot = false;
-        let mut generate = false;
-
-        let card = egui::Frame::none()
-            .fill(theme::WINDOW_FILL)
-            .rounding(egui::Rounding::same(18.0))
-            .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
-            .shadow(egui::epaint::Shadow {
-                offset: egui::vec2(0.0, 18.0),
-                blur: 44.0,
-                spread: 0.0,
-                color: egui::Color32::from_black_alpha(170),
-            })
-            .inner_margin(egui::Margin::same(30.0));
-
-        let mut show_pw = self.gate_show;
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(theme::BASE))
-            .show(ctx, |ui| {
-                gate_background(ui.painter(), ui.max_rect(), time);
-            });
-
-        egui::Area::new(egui::Id::new("gate_card"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                card.show(ui, |ui| {
-                    ui.set_width(400.0);
-                    ui.vertical_centered(|ui| {
-                        let (lrect, _) = ui.allocate_exact_size(
-                            egui::vec2(84.0, 84.0),
-                            egui::Sense::hover(),
-                        );
-                        let c = lrect.center();
-                        ui.painter()
-                            .circle_filled(c, 42.0, theme::PRIMARY.gamma_multiply(0.55));
-                        ui.painter().circle_stroke(
-                            c,
-                            35.0,
-                            egui::Stroke::new(1.5_f32, theme::PRIMARY_HOVER),
-                        );
-                        ui.put(
-                            lrect.shrink(16.0),
-                            egui::Image::new(egui::include_image!("../assets/logo.svg")),
-                        );
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("Mahzen").size(28.0).strong());
-                        ui.add_space(2.0);
-                        ui.label(RichText::new(crate::tr!("AES-256 encrypted markdown vault")).weak());
-                    });
-                    ui.add_space(22.0);
-
-                    match &mut self.gate {
-                        Gate::CreatePassword {
-                            password,
-                            confirm,
-                            error,
-                        } => {
-                            ui.label(RichText::new(crate::tr!("Create a master password")).strong());
-                            ui.add_space(4.0);
-                            ui.label(
-                                RichText::new(
-                                    "16+ characters with upper- and lower-case letters, a number and a special character. No words — avoid 4 letters in a row.",
-                                )
-                                .weak()
-                                .small(),
-                            );
-                            ui.add_space(12.0);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut *password)
-                                    .id(egui::Id::new("gate_pw"))
-                                    .password(true)
-                                    .hint_text(crate::tr!("Master password"))
-                                    .desired_width(f32::INFINITY),
-                            );
-                            ui.add_space(6.0);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut *confirm)
-                                    .password(true)
-                                    .hint_text(crate::tr!("Confirm password"))
-                                    .desired_width(f32::INFINITY),
-                            );
-                            ui.add_space(10.0);
-                            policy_checklist(ui, password);
-                            if let Some(err) = error {
-                                ui.add_space(6.0);
-                                ui.label(RichText::new(err.clone()).color(theme::DANGER).small());
-                            }
-                            ui.add_space(16.0);
-                            ui.horizontal(|ui| {
-                                let w = (ui.available_width() - 8.0) * 0.5;
-                                if ui
-                                    .add_sized(
-                                        egui::vec2(w, 40.0),
-                                        egui::Button::image_and_text(
-                                            Icon::Check.image(18.0, Color32::WHITE),
-                                            "Set password",
-                                        )
-                                        .fill(theme::PRIMARY)
-                                        .rounding(egui::Rounding::same(10.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    action = GateAction::Create;
-                                }
-                                if ui
-                                    .add_sized(
-                                        egui::vec2(w, 40.0),
-                                        egui::Button::image_and_text(
-                                            Icon::Generate.image(18.0, theme::LINK),
-                                            "Generate",
-                                        )
-                                        .rounding(egui::Rounding::same(10.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    generate = true;
-                                }
-                            });
-                        }
-                        Gate::Unlock { password, error } => {
-                            if let Some(secs) = locked {
-                                ui.vertical_centered(|ui| {
-                                    hourglass(ui, 92.0, fraction, time);
-                                    ui.add_space(8.0);
-                                    ui.label(
-                                        RichText::new("Too many incorrect attempts")
-                                            .color(theme::DANGER)
-                                            .strong(),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(RichText::new("Try again in").weak().small());
-                                    ui.label(RichText::new(fmt_duration(secs)).size(26.0).strong());
-                                });
-                            } else {
-                                ui.label(RichText::new(crate::tr!("Enter your master password")).strong());
-                                ui.add_space(12.0);
-                                let resp = ui
-                                    .horizontal(|ui| {
-                                        icons::icon(
-                                            ui,
-                                            Icon::Key,
-                                            16.0,
-                                            ui.visuals().weak_text_color(),
-                                        );
-                                        let w = ui.available_width() - 30.0;
-                                        let r = ui.add(
-                                            egui::TextEdit::singleline(&mut *password)
-                                                .id(egui::Id::new("gate_pw"))
-                                                .password(!show_pw)
-                                                .hint_text(crate::tr!("Master password"))
-                                                .desired_width(w),
-                                        );
-                                        if icons::button(
-                                            ui,
-                                            if show_pw { Icon::EyeOff } else { Icon::Eye },
-                                            18.0,
-                                            true,
-                                            show_pw,
-                                            "Show / hide",
-                                        )
-                                        .clicked()
-                                        {
-                                            show_pw = !show_pw;
-                                        }
-                                        r
-                                    })
-                                    .inner;
-                                if let Some(err) = error {
-                                    ui.add_space(6.0);
-                                    ui.label(RichText::new(err.clone()).color(theme::DANGER).small());
-                                }
-                                ui.add_space(14.0);
-                                let enter = resp.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                // A modern, icon-only primary button: the icon is
-                                // centred on the accent (purple) pill.
-                                let (brect, bresp) = ui.allocate_exact_size(
-                                    egui::vec2(ui.available_width(), 44.0),
-                                    egui::Sense::click(),
-                                );
-                                let fill = if bresp.hovered() {
-                                    theme::PRIMARY_HOVER
-                                } else {
-                                    theme::PRIMARY
-                                };
-                                ui.painter()
-                                    .rect_filled(brect, egui::Rounding::same(12.0), fill);
-                                let icon = 22.0;
-                                Icon::CheckCircle.image(icon, Color32::WHITE).paint_at(
-                                    ui,
-                                    egui::Rect::from_center_size(
-                                        brect.center(),
-                                        egui::vec2(icon, icon),
-                                    ),
-                                );
-                                let bresp = bresp
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text(crate::tr!("Unlock"));
-                                if bresp.clicked() || enter {
-                                    action = GateAction::Unlock;
-                                }
-                            }
-                            ui.add_space(16.0);
-                            ui.vertical_centered(|ui| {
-                                ui.horizontal(|ui| {
-                                    if icons::button(
-                                        ui,
-                                        Icon::Warning,
-                                        15.0,
-                                        locked.is_none(),
-                                        false,
-                                        "Forgot password? Erase everything.",
-                                    )
-                                    .clicked()
-                                    {
-                                        forgot = true;
-                                    }
-                                    ui.label(
-                                        RichText::new(crate::tr!("Forgot password?"))
-                                            .color(theme::LINK)
-                                            .small(),
-                                    );
-                                });
-                            });
-                        }
-                        Gate::Open => {}
-                    }
-                });
-            });
-        self.gate_show = show_pw;
-
-        // Keep the sand draining smoothly while locked out.
-        if locked.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(40));
-        }
-
-        // Make sure the password field is focused so typing works immediately —
-        // important when the window opens fullscreen.
-        if !self.confirm_forgot
-            && !matches!(self.gate, Gate::Open)
-            && ctx.memory(|m| m.focused().is_none())
-        {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("gate_pw")));
-        }
-
-        match action {
-            GateAction::Create => self.try_create_password(),
-            GateAction::Unlock => self.try_unlock(),
-            GateAction::None => {}
-        }
-        if forgot {
-            self.confirm_forgot = true;
-        }
-        if generate {
-            if let Gate::CreatePassword {
-                password, confirm, ..
-            } = &mut self.gate
-            {
-                let pw = crypto::generate_password();
-                *password = pw.clone();
-                *confirm = pw;
-            }
-        }
-
-        // Erase-everything confirmation.
-        if self.confirm_forgot {
-            let mut confirm = false;
-            let mut cancel = false;
-            egui::Window::new(crate::tr!("Erase everything?"))
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.set_width(430.0);
-                    ui.horizontal(|ui| {
-                        icons::icon(ui, Icon::Warning, 18.0, theme::DANGER);
-                        ui.colored_label(
-                            theme::DANGER,
+                ui.add_space(6.0);
+                egui::Frame::none()
+                    .fill(theme::PANEL)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
+                    .rounding(egui::Rounding::same(8.0))
+                    .inner_margin(egui::Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width().min(560.0));
+                        ui.label(
                             RichText::new(crate::tr!(
-                                "Everything will be lost. This cannot be undone."
+                                "Encryption has been removed. Enter the old master password once to convert every note and attachment to a plain file. Nothing is deleted."
                             ))
-                            .strong(),
+                            .size(12.5)
+                            .color(theme::TEXT_MUTED),
                         );
+                        ui.add_space(10.0);
+                        ui.label(
+                            RichText::new(mig.root.display().to_string())
+                                .monospace()
+                                .size(11.0)
+                                .color(theme::TEXT_MUTED),
+                        );
+                        ui.add_space(10.0);
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut mig.password)
+                                .hint_text(crate::tr!("Old master password"))
+                                .password(true)
+                                .desired_width(f32::INFINITY),
+                        );
+                        if mig.error.is_none() {
+                            resp.request_focus();
+                        }
+                        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            convert = true;
+                        }
+                        if let Some(err) = &mig.error {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new(err).color(theme::DANGER).small());
+                        }
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(crate::tr!("Convert to plain Markdown")).strong(),
+                                    )
+                                    .min_size(egui::vec2(210.0, 30.0)),
+                                )
+                                .clicked()
+                            {
+                                convert = true;
+                            }
+                            if ui.button(crate::tr!("Choose another vault…")).clicked() {
+                                skip = true;
+                            }
+                        });
                     });
-                    ui.add_space(8.0);
+                ui.add_space(10.0);
+                ui.vertical_centered(|ui| {
                     ui.label(
-                        "All notes in your vault will be permanently deleted, along with your \
-                         master password. There is no way to recover them. You will start fresh \
-                         with an empty vault and a new password.",
+                        RichText::new(crate::tr!(
+                            "If you no longer have the password, the old notes cannot be recovered."
+                        ))
+                        .size(11.0)
+                        .color(theme::TEXT_MUTED),
                     );
-                    ui.add_space(16.0);
-                    ui.horizontal(|ui| {
-                        if icons::danger_button(
-                            ui,
-                            Icon::Trash,
-                            24.0,
-                            true,
-                            "Yes, delete everything",
-                        )
-                        .clicked()
-                        {
-                            confirm = true;
-                        }
-                        if icons::button(ui, Icon::Close, 24.0, true, false, crate::tr!("Cancel"))
-                            .clicked()
-                        {
-                            cancel = true;
-                        }
-                    });
                 });
-            if confirm {
-                self.forgot_password();
-            } else if cancel {
-                self.confirm_forgot = false;
-            }
-        }
-    }
-
-    /// Erase everything: delete the vault's notes and the keyfile, reset app
-    /// state (lockout, recents), and drop back to password creation so the user
-    /// ends up with an empty vault under a brand-new password.
-    fn forgot_password(&mut self) {
-        // 1. Delete every note in the last known vault.
-        if let Some(root) = self.config.last_vault.clone() {
-            if let Ok(vault) = Vault::open(root) {
-                for note in &vault.notes {
-                    let _ = fs::remove_file(&note.path);
+            });
+        if convert {
+            match legacy::unlock(&mig.password) {
+                Ok(key) => {
+                    let report = legacy::migrate_vault(&mig.root, &key);
+                    if report.failed > 0 {
+                        mig.error = Some(crate::tr!(
+                            "{} file(s) could not be converted",
+                            report.failed
+                        ));
+                        self.legacy_migration = Some(mig);
+                        return;
+                    }
+                    let root = mig.root.clone();
+                    let count = report.decrypted;
+                    self.status = crate::tr!("Converted {} file(s) to plain Markdown", count);
+                    self.open_vault(root);
+                }
+                Err(e) => {
+                    mig.error = Some(e);
                 }
             }
+        } else if skip {
+            self.open_picker();
         }
-        // 2. Delete the keyfile (salt + password verifier).
-        let _ = fs::remove_file(Keyfile::path());
-
-        // 3. Reset configuration but keep pointing at the (now empty) vault so
-        //    the user lands in an empty vault once the new password is set.
-        let last = self.config.last_vault.clone();
-        let mut cfg = Config {
-            last_vault: last.clone(),
-            ..Default::default()
-        };
-        if let Some(path) = last {
-            cfg.recent_vaults.push(path);
+        if self.legacy_migration.is_none() && !skip && !convert {
+            self.legacy_migration = Some(mig);
         }
-        self.config = cfg;
-        self.config.save();
-
-        self.crypto = None;
-        self.vault = None;
-        self.tree = TreeNode::default();
-        self.tabs.clear();
-        self.active = 0;
-        self.backlinks.clear();
-        self.last_active = None;
-        self.confirm_forgot = false;
-        self.show_password_warning = false;
-        self.gate = Gate::CreatePassword {
-            password: String::new(),
-            confirm: String::new(),
-            error: None,
-        };
-        self.status = "Everything erased. Create a new password to start an empty vault.".into();
     }
-
-    // -------------------------------------------------------------- UI parts
 
     fn top_bar(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::side_top_panel(&ctx.style())
@@ -6083,19 +4691,7 @@ impl EncryptedNoteApp {
                             self.toggle_bookmark();
                         }
                         ui.add_space(6.0);
-                        // ---- tools: feeds, save
-                        if icons::button(
-                            ui,
-                            Icon::Rss,
-                            17.0,
-                            true,
-                            self.feeds_open,
-                            crate::tr!("RSS feeds"),
-                        )
-                        .clicked()
-                        {
-                            self.feeds_open = !self.feeds_open;
-                        }
+                        // ---- tools: save
                         if icons::button(ui, Icon::Save, 17.0, !self.tabs.is_empty(), false, "Save")
                             .clicked()
                         {
@@ -6161,9 +4757,6 @@ impl EncryptedNoteApp {
                     .clicked()
                     {
                         self.settings_open = true;
-                    }
-                    if icons::button(ui, Icon::Lock, 17.0, true, false, "Lock now").clicked() {
-                        self.lock();
                     }
                 });
             });
@@ -6522,18 +5115,6 @@ impl EncryptedNoteApp {
                         .clicked()
                     {
                         self.show_graph = !self.show_graph;
-                    }
-                    if icons::button(
-                        ui,
-                        Icon::Rss,
-                        16.0,
-                        true,
-                        self.feeds_open,
-                        crate::tr!("RSS feeds"),
-                    )
-                    .clicked()
-                    {
-                        self.feeds_open = !self.feeds_open;
                     }
                     let starred = self
                         .tabs
@@ -7148,14 +5729,8 @@ impl EncryptedNoteApp {
             .fill(theme::BASE)
             .inner_margin(egui::Margin::symmetric(16.0, 8.0));
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            // The RSS reader does not need an open vault.
             if self.vault.is_none() {
                 self.welcome_ui(ui);
-                return;
-            }
-
-            if self.feeds_open {
-                self.feeds_ui(ui);
                 return;
             }
 
@@ -9042,7 +7617,7 @@ impl EncryptedNoteApp {
             );
             ui.add_space(6.0);
             ui.label(RichText::new("Mahzen").size(34.0).strong());
-            ui.label(RichText::new(crate::tr!("AES-256 encrypted markdown vault")).weak());
+            ui.label(RichText::new(crate::tr!("A markdown vault for your notes")).weak());
             ui.add_space(20.0);
             if icons::button(
                 ui,
@@ -9703,10 +8278,10 @@ impl EncryptedNoteApp {
                 ui.label(
                     RichText::new(match mode {
                         PortabilityMode::Export => crate::tr!(
-                            "Every note is written as a plain .md file in a separate folder; the encrypted vault is left untouched."
+                            "Every note is written as a plain .md file in a separate folder; your vault is left untouched."
                         ),
                         PortabilityMode::Import => crate::tr!(
-                            "Markdown files are copied into this vault and encrypted; the source folder is not modified."
+                            "Markdown files are copied into this vault; the source folder is not modified."
                         ),
                     })
                     .small()
@@ -10469,7 +9044,7 @@ impl EncryptedNoteApp {
             if let Some(p) = chosen {
                 if self.canvas_pdf_mode {
                     self.canvas_pdf_mode = false;
-                    // Store the PDF encrypted inside the vault and reference it
+                    // Store the PDF inside the vault and reference it
                     // relatively, so a canvas board is self-contained.
                     let mut rel = p.to_string_lossy().to_string();
                     if let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) {
@@ -10726,11 +9301,7 @@ impl eframe::App for EncryptedNoteApp {
         // Keep the window title in sync — but only send the command when it
         // actually changes. Sending it every frame spams the compositor with
         // reconfigure requests, which can make a fullscreen window unresponsive.
-        let desired_title = if self.show_password_warning {
-            format!("{} — {}", "Mahzen", crate::tr!("Save your password"))
-        } else if !matches!(self.gate, Gate::Open) {
-            format!("{} — {}", "Mahzen", crate::tr!("Locked"))
-        } else if let Some(tab) = self.tabs.get(self.active) {
+        let desired_title = if let Some(tab) = self.tabs.get(self.active) {
             let mark = if tab.dirty() { "● " } else { "" };
             format!("{mark}{} — {}", tab.title, "Mahzen")
         } else {
@@ -10741,9 +9312,8 @@ impl eframe::App for EncryptedNoteApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(desired_title));
         }
 
-        // Ask the compositor for keyboard focus once. This must happen *before*
-        // the lock-screen early-return below, otherwise a fullscreen window opens
-        // on the login page without focus and you can't type.
+        // Ask the compositor for keyboard focus once, since a fullscreen window
+        // can otherwise open unfocused and swallow the first keystrokes.
         if !self.requested_focus {
             self.requested_focus = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -10769,21 +9339,32 @@ impl eframe::App for EncryptedNoteApp {
             ctx.request_repaint();
         }
 
-        // After creating a password, show the "record your password" popup
-        // before anything else. The vault opens when the user presses OK.
-        if self.show_password_warning {
-            self.password_warning_ui(ctx);
+        // Open the last vault automatically; there is no login gate any more.
+        if self.apply_saved_window_mode {
+            if let Some(path) = self.config.last_vault.clone() {
+                if path.is_dir() && self.vault.is_none() {
+                    // A vault from the old encrypted version must be converted
+                    // once before it can be opened as plain Markdown.
+                    if legacy::vault_needs_migration(&path) {
+                        self.legacy_migration = Some(LegacyMigration {
+                            root: path,
+                            password: String::new(),
+                            error: None,
+                        });
+                    } else {
+                        self.open_vault(path);
+                    }
+                }
+            }
+        }
+
+        // While a legacy vault is being converted, show only that screen.
+        if self.legacy_migration.is_some() {
+            self.legacy_migration_ui(ctx);
             return;
         }
 
-        // While locked, show only the password screen. Nothing else runs.
-        if !matches!(self.gate, Gate::Open) {
-            self.gate_ui(ctx);
-            return;
-        }
-
-        // Apply the saved startup window mode once, now that the vault is open
-        // (the login screen deliberately starts windowed).
+        // Apply the saved startup window mode once, on the first frame.
         if self.apply_saved_window_mode {
             self.apply_saved_window_mode = false;
             self.send_window_mode(ctx);
@@ -10818,11 +9399,9 @@ impl eframe::App for EncryptedNoteApp {
         self.right_panel(ctx);
         self.central_panel(ctx);
         self.dialogs(ctx);
-        self.feeds_dialogs(ctx);
         self.palette_ui(ctx);
 
         // Poll background feed work.
-        self.poll_feeds();
         self.poll_canvas_web();
         if !self.canvas_web_pending.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(400));
@@ -10830,7 +9409,6 @@ impl eframe::App for EncryptedNoteApp {
         if self.voice_recording.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
-        self.poll_full_article();
 
         // Apply deferred actions now that all UI borrows have ended.
         if let Some((y, m, d)) = self.pending_daily.take() {
@@ -11078,59 +9656,6 @@ fn show_tree(
     }
 }
 
-/// Draw the live password-policy checklist (icon + colour for each rule).
-fn policy_checklist(ui: &mut egui::Ui, password: &str) {
-    let checks = [
-        (
-            password.chars().count() >= crate::crypto::MIN_PASSWORD_LEN,
-            crate::tr!("At least 16 characters"),
-        ),
-        (
-            password.chars().any(|c| c.is_ascii_digit()),
-            crate::tr!("A number"),
-        ),
-        (
-            password.chars().any(|c| c.is_uppercase()),
-            crate::tr!("A capital letter"),
-        ),
-        (
-            password.chars().any(|c| c.is_lowercase()),
-            crate::tr!("A lower-case letter"),
-        ),
-        (
-            password.chars().any(|c| !c.is_alphanumeric()),
-            crate::tr!("A special character"),
-        ),
-        (
-            !crypto::has_letter_run(password, 4),
-            crate::tr!("No words (max 3 letters in a row)"),
-        ),
-    ];
-    for (ok, label) in checks {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 5.0;
-            let (ic, color) = if ok {
-                (Icon::Check, theme::SUCCESS)
-            } else {
-                (Icon::Close, ui.visuals().weak_text_color())
-            };
-            icons::icon(ui, ic, 13.0, color);
-            ui.label(RichText::new(label).small().color(color));
-        });
-    }
-}
-
-/// Format a number of seconds as `Xm YYs` or `Ys`.
-fn fmt_duration(secs: u64) -> String {
-    let minutes = secs / 60;
-    let seconds = secs % 60;
-    if minutes > 0 {
-        format!("{minutes}m {seconds:02}s")
-    } else {
-        format!("{seconds}s")
-    }
-}
-
 /// Map a character index to a `(line, col)` pair.
 fn char_to_linecol(text: &str, cursor: usize) -> (usize, usize) {
     let mut line = 0;
@@ -11206,47 +9731,6 @@ fn collect_vim_keys(ctx: &egui::Context) -> Vec<vim::Key> {
     out
 }
 
-/// A modern, clickable link row (icon + label + domain) opening `url`.
-fn link_row(ui: &mut egui::Ui, url: &str, label: &str) {
-    let color = theme::LINK;
-    let frame = egui::Frame::none()
-        .fill(ui.visuals().faint_bg_color)
-        .stroke(egui::Stroke::new(1.0_f32, theme::BORDER))
-        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
-        .rounding(egui::Rounding::same(8.0));
-    ui.vertical(|ui| {
-        let inner = frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                icons::icon(ui, Icon::Link, 15.0, color);
-                ui.label(RichText::new(label).color(color).strong());
-                ui.label(RichText::new(url_domain(url)).weak().small());
-            });
-        });
-        let resp = ui
-            .interact(
-                inner.response.rect,
-                ui.id().with(("feed-link", url)),
-                egui::Sense::click(),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(url);
-        if resp.clicked() {
-            open_external(url);
-        }
-    });
-}
-
-/// The host part of a URL, for display.
-fn url_domain(url: &str) -> String {
-    let rest = url.split("://").nth(1).unwrap_or(url);
-    rest.split(['/', '?', '#'])
-        .next()
-        .unwrap_or(rest)
-        .to_string()
-}
-
-/// Local file targets (`assets/…`) referenced by markdown media links.
 /// A media reference found in a note, with an optional explicit size.
 #[derive(Clone, Debug, PartialEq)]
 struct MediaRef {
@@ -12193,123 +10677,6 @@ fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
-}
-
-/// Paint the login screen background: a vertical gradient with a soft, gently
-/// pulsing accent glow behind the card.
-fn gate_background(painter: &egui::Painter, rect: egui::Rect, time: f64) {
-    let top = Color32::from_rgb(0x18, 0x16, 0x24);
-    let bottom = Color32::from_rgb(0x0b, 0x0b, 0x11);
-    let mut mesh = egui::epaint::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(rect.left_bottom(), bottom);
-    mesh.colored_vertex(rect.right_bottom(), bottom);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(1, 3, 2);
-    painter.add(egui::Shape::mesh(mesh));
-
-    let pulse = 0.045 + 0.018 * (time * 0.9).sin() as f32;
-    let center = egui::pos2(rect.center().x, rect.center().y - rect.height() * 0.08);
-    for i in (1..=6).rev() {
-        let r = rect.height() * 0.10 * i as f32;
-        painter.circle_filled(center, r, theme::PRIMARY.gamma_multiply(pulse / i as f32));
-    }
-}
-
-/// Draw an animated hourglass: sand drains from the top bulb to the bottom one
-/// as `fraction` (remaining / total) falls from 1 to 0.
-fn hourglass(ui: &mut egui::Ui, size: f32, fraction: f32, time: f64) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size * 1.35), egui::Sense::hover());
-    let c = rect.center();
-    let half = size * 0.30;
-    let top = rect.top() + 6.0;
-    let bottom = rect.bottom() - 6.0;
-    let mid = c.y;
-    let frac = fraction.clamp(0.0, 1.0);
-    let p = |x: f32, y: f32| egui::pos2(x, y);
-    let painter = ui.painter();
-
-    // Soft glow behind the glass.
-    painter.circle_filled(c, size * 0.55, theme::ACCENT.gamma_multiply(0.10));
-
-    // Glass bulbs (translucent fill).
-    let glass = theme::LINK.gamma_multiply(0.06);
-    painter.add(egui::Shape::convex_polygon(
-        vec![p(c.x - half, top), p(c.x + half, top), p(c.x, mid)],
-        glass,
-        egui::Stroke::NONE,
-    ));
-    painter.add(egui::Shape::convex_polygon(
-        vec![p(c.x - half, bottom), p(c.x + half, bottom), p(c.x, mid)],
-        glass,
-        egui::Stroke::NONE,
-    ));
-
-    let sand = theme::ACCENT;
-    let ht = mid - top;
-    let hb = bottom - mid;
-
-    // Top sand: fills down from the top to `level`.
-    let level = top + ht * (1.0 - frac);
-    let w0 = half * ((mid - level) / ht).clamp(0.0, 1.0);
-    if w0 > 0.5 {
-        painter.add(egui::Shape::convex_polygon(
-            vec![p(c.x - w0, level), p(c.x + w0, level), p(c.x, mid)],
-            sand,
-            egui::Stroke::NONE,
-        ));
-    }
-
-    // Bottom sand: accumulates up from the bottom to `level_b`.
-    let level_b = bottom - hb * (1.0 - frac);
-    let wb = half * ((level_b - mid) / hb).clamp(0.0, 1.0);
-    if wb > 0.5 {
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                p(c.x - half, bottom),
-                p(c.x + half, bottom),
-                p(c.x + wb, level_b),
-                p(c.x - wb, level_b),
-            ],
-            sand,
-            egui::Stroke::NONE,
-        ));
-    }
-
-    // Falling stream + a few grains, while the sand is still moving.
-    if frac > 0.02 && frac < 0.98 {
-        let wobble = (time * 6.0).sin() as f32 * 0.6;
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                p(c.x - 1.3 + wobble, level),
-                p(c.x + 1.3 + wobble, level),
-                p(c.x + 1.3, level_b),
-                p(c.x - 1.3, level_b),
-            ],
-            sand,
-            egui::Stroke::NONE,
-        ));
-        for k in 0..3 {
-            let t = ((time * 1.3 + k as f64 * 0.34) % 1.0) as f32;
-            let gy = level + (level_b - level) * t;
-            painter.circle_filled(p(c.x + wobble, gy), 1.3, sand);
-        }
-    }
-
-    // Outlines + caps on top of the sand.
-    let edge = egui::Stroke::new(1.8_f32, theme::LINK.gamma_multiply(0.65));
-    painter.add(egui::Shape::closed_line(
-        vec![p(c.x - half, top), p(c.x + half, top), p(c.x, mid)],
-        edge,
-    ));
-    painter.add(egui::Shape::closed_line(
-        vec![p(c.x - half, bottom), p(c.x + half, bottom), p(c.x, mid)],
-        edge,
-    ));
-    let cap = egui::Stroke::new(2.4_f32, theme::LINK.gamma_multiply(0.7));
-    painter.line_segment([p(c.x - half, top), p(c.x + half, top)], cap);
-    painter.line_segment([p(c.x - half, bottom), p(c.x + half, bottom)], cap);
 }
 
 /// Truncate a string to `max` characters, adding an ellipsis if cut.

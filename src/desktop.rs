@@ -29,12 +29,12 @@ fn desktop_entry(exec: &str) -> String {
          Type=Application\n\
          Name=Mahzen\n\
          GenericName=Markdown Notes\n\
-         Comment=A native, Obsidian-like markdown note taking app with AES-256 encryption\n\
+         Comment=A native, Obsidian-like markdown note taking app\n\
          Exec=\"{exec}\" %F\n\
          Icon={APP_ID}\n\
          Terminal=false\n\
          Categories=Office;TextEditor;Security;\n\
-         Keywords=notes;markdown;encrypted;aes;obsidian;wiki;\n\
+         Keywords=notes;markdown;obsidian;wiki;mahzen;\n\
          StartupNotify=true\n\
          StartupWMClass={APP_ID}\n"
     )

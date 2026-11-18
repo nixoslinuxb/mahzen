@@ -123,13 +123,11 @@ pub struct ImportFile {
     pub rel: PathBuf,
     /// Absolute source path.
     pub source: PathBuf,
-    /// Whether the file already looks like an encrypted note.
-    pub encrypted: bool,
 }
 
 /// Scan an import root and classify its files. `.md`/`.markdown` files become
 /// notes; everything else is treated as an attachment.
-pub fn scan_import(root: &Path, encrypted_magic: &[u8]) -> (Vec<ImportFile>, Vec<PathBuf>) {
+pub fn scan_import(root: &Path) -> (Vec<ImportFile>, Vec<PathBuf>) {
     let mut notes = Vec::new();
     let mut assets = Vec::new();
     for rel in walk_files(root) {
@@ -137,15 +135,7 @@ pub fn scan_import(root: &Path, encrypted_magic: &[u8]) -> (Vec<ImportFile>, Vec
         let name = rel.file_name().map(|n| n.to_string_lossy().to_string());
         let Some(name) = name else { continue };
         if is_markdown_name(&name) {
-            let encrypted = fs::read(&source)
-                .ok()
-                .map(|b| b.starts_with(encrypted_magic))
-                .unwrap_or(false);
-            notes.push(ImportFile {
-                rel,
-                source,
-                encrypted,
-            });
+            notes.push(ImportFile { rel, source });
         } else {
             assets.push(rel);
         }
@@ -286,9 +276,8 @@ mod tests {
         fs::write(root.join("notes/pic.png"), b"x").unwrap();
         fs::write(root.join(".git/config"), b"x").unwrap();
         fs::write(root.join(".hidden.md"), b"x").unwrap();
-        let (notes, assets) = scan_import(&root, b"ENCD1");
+        let (notes, assets) = scan_import(&root);
         assert_eq!(notes.len(), 2);
-        assert!(notes.iter().all(|n| !n.encrypted));
         assert_eq!(assets, vec![PathBuf::from("notes/pic.png")]);
         let _ = fs::remove_dir_all(&root);
     }
@@ -299,7 +288,7 @@ mod tests {
         let vault = tmp("import-vault");
         fs::write(src.join("A.md"), b"# new a").unwrap();
         fs::write(vault.join("A.md"), b"existing").unwrap();
-        let (notes, assets) = scan_import(&src, b"ENCD1");
+        let (notes, assets) = scan_import(&src);
         let mut store = std::collections::HashMap::new();
         let report = import_files(
             &notes,

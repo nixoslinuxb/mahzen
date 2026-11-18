@@ -2,24 +2,20 @@
 
 [![CI](https://github.com/nixoslinuxb/mahzen/actions/workflows/ci.yml/badge.svg)](https://github.com/nixoslinuxb/mahzen/actions/workflows/ci.yml)
 
-A native, Obsidian-like markdown note-taking app written in Rust, with
-**AES-256 encryption** for everything it stores. It is **Wayland-only** — it
-refuses to start under X11 or XWayland — and targets Arch Linux.
+A native, Obsidian-like markdown note-taking app written in Rust. It is
+**Wayland-only** — it refuses to start under X11 or XWayland — and targets Arch
+Linux.
 
-Your notes never touch disk in plaintext: every note is encrypted with
-AES-256-GCM, and the encryption key is derived from your master password with
-Argon2id. The app asks for that password **every time it starts**, and there is
-no passwordless way in.
+Notes are stored as **plain Markdown files** inside a vault folder you choose:
+no login screen, no password, no encryption layer. Open the app and your notes
+are there; the same files open in Obsidian, VS Code or `grep`.
 
 ## Contents
 
-- [Encryption model](#encryption-model) · [Password policy](#password-policy) ·
-  [Login lockout](#login-lockout-escalating) · [Forgot password](#forgot-password)
 - [Features](#features) · [GPU rendering](#gpu-rendering) ·
   [Editing experience](#editing-experience) ·
   [Obsidian-parity features](#obsidian-parity-features)
-- [Theme](#theme) · [Attachments](#attachments) · [RSS reader](#rss-reader) ·
-  [Icons & UX](#icons--ux) ·
+- [Theme](#theme) · [Attachments](#attachments) · [Icons & UX](#icons--ux) ·
   [Supported markdown](#supported-markdown)
 - [Install](#install-arch-linux) · [Run](#run) ·
   [Security hardening](#security-hardening) ·
@@ -27,93 +23,26 @@ no passwordless way in.
 - [Where things are stored](#where-things-are-stored) · [Layout](#layout) ·
   [Development](#development) · [License](#license)
 
-## Encryption model
+## Your data
 
-| Concern | Choice |
-| --- | --- |
-| Data cipher | **AES-256-GCM** (authenticated encryption) |
-| Key derivation | **Argon2id** (v19, 19 MiB, t=2, p=1), 256-bit key |
-| Salt | 16 random bytes per vault, stored in the keyfile |
-| Nonce | fresh random 12 bytes per note write |
-| Password storage | **never stored** — only a salt and a verifier ciphertext |
+- Notes are ordinary `.md` files under your vault folder, written atomically
+  (temp file + rename) so a crash cannot corrupt them.
+- Attachments live in `<vault>/assets/` and are ordinary files too.
+- The app keeps no copy of your notes; the vault folder *is* the source of
+  truth, so any other editor or tool can read and write it.
 
-- On first launch you create a master password. We generate a random salt and
-  derive the key from your password with Argon2id. To recognise the correct
-  password later we store a small **verifier** (the encryption of a fixed marker
-  under your key). The password itself is never written anywhere.
-- Each note on disk is framed as
-  `magic("ENCD1") ‖ nonce(12) ‖ AES-256-GCM ciphertext+tag`, written via a
-  temp-file-and-rename so a crash cannot corrupt a note.
-- Notes from earlier (unencrypted) versions are transparently **migrated**: the
-  first time you open such a vault while unlocked, any plaintext `.md` files are
-  encrypted in place — and the same now happens for attachments in `assets/`.
-- **Attachments are encrypted too.** Images, voice notes, audio, video and PDF
-  cards are stored with the same `ENCD1` AES-256-GCM frame as notes, so a
-  screenshotted attachment or a voice memo is no longer readable on disk.
-  The app decrypts in memory for display and writes short-lived decrypted
-  copies to `$XDG_RUNTIME_DIR` (tmpfs) only for external tools like `ffmpeg`
-  and `pdftoppm`; that cache is deleted when the vault locks.
-
-## Password policy
-
-A master password must contain **all** of:
-
-- at least **16 characters**
-- at least **one number**
-- at least **one capital letter**
-- at least **one lower-case letter**
-- at least **one special character**
-- **no words** — it must not contain 4 letters in a row
-
-A live checklist on the setup screen shows which rules are satisfied. The setup
-screen also has a **sparkles** button that generates a random, policy-compliant
-password for you (using OS randomness, never more than two letters in a row).
-
-### After you set your password
-
-A modern popup appears warning you to **record your master password somewhere
-safe**, because it is the only key to your notes and cannot be recovered. The
-vault only opens once you press the **OK** icon at the bottom-right of the popup.
-
-## Login lockout (escalating)
-
-Incorrect passwords are rate-limited, and the lockout state is persisted so
-restarting the app cannot bypass it:
-
-| Wrong attempts | Lockout |
-| --- | --- |
-| first 5 | **5 minutes** |
-| next 5 | **10 minutes** |
-| next 5 | **20 minutes** |
-| next 5 | **40 minutes** |
-| … | doubles each time (5 · 2ⁿ minutes) |
-
-A successful login resets the counter and the backoff.
-
-While locked out the login card shows an **animated hourglass** (drawn with
-vector shapes) whose sand drains from the top bulb to the bottom as the
-countdown runs down, next to a live `m:ss` timer.
-
-## Forgot password
-
-The unlock screen has a **Forgot password?** link. It shows a confirmation
-warning that **everything will be lost**. If you confirm:
-
-1. every note in your vault is deleted,
-2. the keyfile (and therefore the password) is deleted,
-3. the app resets and returns to the *create password* screen, pointing at your
-   (now empty) vault.
-
-You then set a new password and start with an **empty vault**.
-
-> Because the key lives only in your password, a forgotten password means the
-> notes are unrecoverable. The lockout is an app-level speed bump stored in a
-> user-writable config file; the real protection is the AES-256 key itself.
+> **Migration note:** earlier versions of Mahzen (then "Encrypted Note")
+  encrypted notes with AES-256-GCM. The encryption layer has been removed on
+  request. If the app opens an `ENCD1` vault it shows a **one-time conversion
+  screen**: enter the old master password once and every note and attachment
+  is rewritten as a plain file (nothing is deleted). The AES/Argon2 code now
+  exists only in `src/legacy.rs`, which can read the old format and never
+  writes it.
 
 ## Features
 
 - **Vaults** — a folder of markdown notes, with last-vault and recent-vaults
-  memory; opened only after unlocking.
+  memory, opened automatically on launch.
 - **Sub-notes** — **hover** any note in the sidebar to reveal inline icons: **＋ New
   sub-note**, **✎ Rename**, **🗑 Delete** (no right-click menu). Sub-notes nest under
   the note using Obsidian's convention: `Parent.md` + `Parent/Child.md`.
@@ -124,7 +53,6 @@ You then set a new password and start with an **empty vault**.
 - **Wikilinks** — `[[Note]]` / `[[Note|alias]]` as clickable preview links.
 - **Backlinks** and **Outline** panels.
 - **Full-text search** across decrypted notes.
-- **Lock now** (File menu) drops the key and returns to the login screen.
 - A modern, rounded dark theme matching Obsidian's default palette, with a
   violet accent (see [Theme](#theme)).
 
@@ -218,7 +146,7 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
 - **Embeds / transclusion** — `![[Note]]` renders the other note inline (depth-limited).
 - **Command palette / quick switcher** — `Ctrl+P` to fuzzy-jump to any note or run a
   command (new note, open vault, daily note, new-from-template, **open canvas**,
-  cycle view, toggle panel, toggle graph, lock, close tab, quit).
+  cycle view, toggle panel, toggle graph, close tab, quit).
 - **Daily notes** — *Open today's / previous / next daily note* commands, plus a
   monthly **calendar sidebar** for arbitrary dates. Obsidian-style: configurable
   **moment date format**, an optional **template note**, and a **Daily notes settings**
@@ -323,13 +251,12 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
 
 - **Plain-Markdown export** — *Export vault as plain Markdown…* writes every
   decrypted note as an ordinary `.md` file (same folder layout) plus its
-  `assets/` attachments into a folder you choose. The encrypted vault is not
+  `assets/` attachments into a folder you choose. Your vault is not
   modified, so the notes become readable by Obsidian, VS Code, `grep`, Git…
 - **Markdown / Obsidian import** — *Import Markdown / Obsidian vault…* scans a
-  folder, copies every `.md` and attachment into the vault and encrypts it
-  there. It is **additive and non-destructive**: the source folder is never
-  modified, and name clashes become `Note (1).md`. Already-encrypted notes are
-  decrypted first, so importing an Mahzen vault works too.
+  folder and copies every `.md` and attachment into the vault. It is
+  **additive and non-destructive**: the source folder is never modified, and
+  name clashes become `Note (1).md`.
 - **HTML / PDF / print export** — *Export current note (PDF / HTML / print)…*
   writes a self-contained HTML file (styled, with tables, code, callouts,
   highlights and images) and opens it in the browser for printing or "Save as
@@ -397,8 +324,8 @@ to `mmdc`.
 <p align="center"><img src="assets/logo.svg" width="96" alt="Mahzen logo"></p>
 
 The app logo lives at `assets/logo.svg` — a rounded violet-gradient tile with a
-note and a lock. It's shown on the welcome and password screens and set as the
-window icon at startup (via `resvg`).
+note and a lock. It's shown on the welcome screen and set as the window icon at
+startup (via `resvg`).
 
 **Taskbar / system-monitor icon.** A Wayland window has no icon protocol: panels
 resolve an app's icon from the `.desktop` file whose name matches the window's
@@ -462,7 +389,7 @@ Details borrowed from that theme:
   - the ribbon and right-panel action rows wrap instead of overflowing,
   - leaving fullscreen restores the last windowed size instead of a
     zero/tiny window, and the saved startup window mode is applied once the
-    vault unlocks.
+    app starts.
 - **Reading surface** — wider line height, rounded bordered code blocks, tinted
   callouts with an accent bar, and a quoted block with an accent rule.
 
@@ -496,45 +423,14 @@ remembered in `media-layout.json`.
 
 Playback uses the `ffmpeg` / `ffprobe` / `pw-cat` (or `aplay`) programs found
 on `PATH`; nothing is linked into the binary, and only one item plays at a time
-(playback stops on its own when you navigate away from the note or lock the
-vault). Attachments are **encrypted at rest** like notes; only a short-lived
-decrypted copy in the runtime dir is handed to `ffmpeg`/`pdftoppm`.
-
-## RSS reader
-
-A built-in feed reader (the **RSS** toolbar button, or the *RSS feeds* palette command):
-
-- Add feeds by URL; they're fetched with the system **`curl`** in a **background
-  thread** (no blocking), then parsed by a built-in RSS 2.0 / RSS 1.0 / Atom parser.
-- **Articles** show the title, date, the **cleaned full text** — `<script>` /
-  `<style>` / `<noscript>` / `<template>` contents are dropped entirely (so inline
-  ad code like `(adsbygoogle = window.adsbygoogle || []).push({});` never shows),
-  obvious JavaScript/ad lines are filtered out, HTML is stripped with paragraph
-  breaks preserved, and the body is laid out in a centred ~720 px reading column
-  with comfortable paragraph spacing — plus the **article link** as a modern
-  clickable row beneath the text. Lead images and video/audio are intentionally
-  not embedded; the reader focuses on readable text.
-- **Load full article** — when a feed only provides a short summary, the reader
-  offers a *Load full article* button that fetches the linked page in the
-  background and extracts the readable body (favoring `<article>`/`<main>`) so
-  the whole article shows inline. The fetched text is remembered on the item and
-  saved with your feeds.
-- **Edit** and **Delete** a feed from the hover icons on its row; a **＋** adds one.
-- **Categories** — give a feed a category and feeds are grouped by it in the sidebar;
-  *Uncategorized* holds the rest.
-- **Save articles** with the **bookmark** icon in the reader; saved articles appear
-  under a **bookmark-icon entry with a count** at the top of the feed list.
-- Articles are always listed **newest first** (dates are parsed from RSS/Atom).
-- **Global search** — the search box matches titles and text across **all** feeds.
-- Feeds, categories, and cached articles persist in
-  `$XDG_CONFIG_HOME/mahzen/feeds.json`.
+(playback stops on its own when you navigate away from the note or close the
+app).
 
 ## Icons & UX
 
 Every control in the app is a hand-drawn **SVG icon** (see `assets/icons/`)
 rather than text or emoji: the toolbar (a **vertical strip docked top-left**),
-tabs, sidebar tree, dialogs, the
-password gate and its checklist. The icons are monochrome SVGs embedded at
+tabs, sidebar tree and dialogs. The icons are monochrome SVGs embedded at
 compile time and rasterised by `egui_extras`' SVG loader, then tinted to match
 the current state (normal / hovered / selected / disabled). Hover any control to
 see a tooltip describing it.
@@ -573,7 +469,7 @@ Some features shell out to programs found on `PATH`; everything else is built in
 
 | Feature | Needs |
 | --- | --- |
-| RSS reader, favicon fetching | `curl` |
+| Web-card metadata / PDF page previews | `curl`, `pdftoppm` |
 | Audio / video attachments | `ffmpeg`, `ffprobe`, and `pw-cat` (PipeWire) or `aplay` (ALSA) |
 | Mermaid diagrams other than flowcharts | `mmdc` (Mermaid CLI) |
 | Opening external links | `xdg-open` |
@@ -585,8 +481,7 @@ Built-in Markdown, math, and Mermaid **flowcharts** need none of these.
 The app opens as a **normal (windowed) window**. Press **`F11`** to cycle
 **fullscreen → maximized → windowed** (or use the *Cycle window mode* command); the
 fullscreen mode is true borderless fullscreen (no title bar), which works on KDE/KWin.
-It also asks the compositor for keyboard focus on the first frame and auto-focuses the
-password field.
+It also asks the compositor for keyboard focus on the first frame.
 
 ```sh
 cargo run --release
@@ -598,7 +493,7 @@ XWayland.
 
 ## Security hardening
 
-Beyond the AES-256-GCM / Argon2id encryption, the code was audited and hardened:
+The code has been audited and hardened:
 
 - **No shell is ever used** — every external tool (`curl`, `ffmpeg`, `ffprobe`,
   `pw-cat`, `aplay`, `mmdc`, `xdg-open`) is run via `Command` with argument arrays,
@@ -610,9 +505,6 @@ Beyond the AES-256-GCM / Argon2id encryption, the code was audited and hardened:
 - **Path confinement** — media/attachment paths taken from note text are resolved
   with `vault_file()`, which rejects absolute paths and `..`, canonicalises, and
   requires the result to stay inside the vault (defeats symlink traversal).
-- **Sensitive files are `0600`** — the keyfile is owner-only.
-- **Unbiased randomness** — the master-password generator uses rejection
-  sampling (`crypto::random_below`) rather than `% n`, so there is no modulo bias.
 - **Single-instance lock** lives in `$XDG_RUNTIME_DIR` (or the per-user config dir),
   never a world-writable `/tmp` path.
 - **Link handlers are scheme-restricted** (`http`/`https`/`mailto` only); XML is
@@ -641,12 +533,9 @@ Beyond the AES-256-GCM / Argon2id encryption, the code was audited and hardened:
 
 ## Where things are stored
 
-- Config and lockout state: `$XDG_CONFIG_HOME/mahzen/config.json`
-- Keyfile (salt + password verifier): `$XDG_CONFIG_HOME/mahzen/keyfile.json`
-  (written with `0600` permissions)
-- RSS feeds and saved articles: `$XDG_CONFIG_HOME/mahzen/feeds.json`
+- Config and workspace state: `$XDG_CONFIG_HOME/mahzen/config.json`
 - Media playback volume + image layout: `$XDG_CONFIG_HOME/mahzen/media-layout.json`
-- Your notes: wherever your vault folder is, as encrypted `.md` files
+- Your notes: wherever your vault folder is, as plain `.md` files
 - Attachments: `<vault>/assets/`, referenced from notes
 - Single-instance socket: `$XDG_RUNTIME_DIR/mahzen.sock`
 - Installed desktop entry + icon: `$XDG_DATA_HOME/applications/mahzen.desktop`
@@ -660,10 +549,9 @@ Beyond the AES-256-GCM / Argon2id encryption, the code was audited and hardened:
 ```
 src/
   main.rs       entry point, Wayland-only guard, eframe bootstrap
-  app.rs        the egui UI, password gate, lockout, palette, graph, tags
+  app.rs        the egui UI, palette, graph, tags, editor and dialogs
   icons.rs      SVG icon set + icon-button helpers
   theme.rs      the dark colour scheme and spacing
-  crypto.rs     AES-256-GCM + Argon2id, keyfile format, policy, generator
   frontmatter.rs minimal YAML frontmatter + inline tags
   index.rs      title/alias/tag/link indexes and wikilink resolution
   palette.rs    fuzzy matching for the command palette
@@ -676,9 +564,8 @@ src/
   search.rs     note search query language (phrases, tag:, path:, file:, regex)
   canvas.rs     Obsidian-compatible `.canvas` documents (nodes, edges)
   vim.rs        modal Vim editing layer (motions, operators, text objects)
-  config.rs     persisted configuration, lockout, and workspace state
+  config.rs     persisted configuration and workspace state
   desktop.rs    installs the desktop entry + icon for panel/taskbar display
-  feeds.rs      RSS/Atom reader: fetch, parse, and article extraction
   media.rs      in-app audio/video playback and image layout
   system_clipboard.rs  ext-data-control clipboard bridge (KWin cross-app copy/paste)
 assets/
@@ -693,9 +580,9 @@ vendor/
 ## Development
 
 ```sh
-cargo test      # unit tests: crypto, policy, lockout, icons, frontmatter, index,
-                # palette, graph, math, mermaid, dates, search, canvas, vim,
-                # markdown, vault, feeds, passwords, media
+cargo test      # unit tests: icons, frontmatter, index, palette, graph, math,
+                # mermaid, dates, search, canvas, vim, markdown, vault,
+                # query, portability, watch, media
 cargo clippy    # lints
 ```
 

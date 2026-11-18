@@ -6,7 +6,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +13,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The app was originally called *Encrypted Note* and stored its config in
 /// `…/encrypted-note/`. On first launch after the rename we move that directory
-/// to `…/mahzen/` so settings, the lockout state and the feed cache survive.
+/// to `…/mahzen/` so existing settings survive.
 pub fn dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -26,14 +25,6 @@ pub fn dir() -> PathBuf {
         let _ = fs::rename(&old, &new);
     }
     new
-}
-
-/// Current wall-clock time as seconds since the Unix epoch.
-pub fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -121,17 +112,6 @@ pub struct Config {
     /// Whether the right-hand panel was visible.
     #[serde(default = "default_true")]
     pub show_right: bool,
-
-    // --- Login lockout state (persisted so restarting cannot bypass it) ---
-    /// Consecutive failed unlock attempts since the last success/lockout.
-    #[serde(default)]
-    pub failed_attempts: u32,
-    /// How many lockouts have happened; drives the exponential backoff.
-    #[serde(default)]
-    pub lockout_step: u32,
-    /// Unix timestamp (seconds) until which login is blocked, if locked.
-    #[serde(default)]
-    pub lockout_until: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -200,9 +180,6 @@ impl Default for Config {
             open_tabs: Vec::new(),
             active_tab: 0,
             show_right: true,
-            failed_attempts: 0,
-            lockout_step: 0,
-            lockout_until: None,
         }
     }
 }
@@ -239,98 +216,5 @@ impl Config {
         self.recent_vaults.insert(0, path.to_path_buf());
         self.recent_vaults.truncate(10);
         self.last_vault = Some(path.to_path_buf());
-    }
-
-    // ------------------------------------------------------------- lockout
-
-    /// Duration of the Nth lockout, in minutes: 5, 10, 20, 40, ... (5 * 2^step).
-    pub fn lockout_minutes(step: u32) -> u64 {
-        // Cap the shift to avoid overflow; well past any practical wait.
-        let shift = step.min(20);
-        5u64.saturating_mul(1u64 << shift)
-    }
-
-    /// Remaining lockout time in seconds as of `now`, or `None` if not locked.
-    pub fn lockout_remaining(&self, now: u64) -> Option<u64> {
-        self.lockout_until
-            .filter(|until| *until > now)
-            .map(|until| until - now)
-    }
-
-    /// Clear the lockout/attempt state (call after a successful unlock).
-    pub fn reset_lockout(&mut self) {
-        self.failed_attempts = 0;
-        self.lockout_step = 0;
-        self.lockout_until = None;
-    }
-
-    /// Record a failed attempt. If this reaches the threshold, arm a lockout
-    /// and advance the backoff step.
-    pub fn register_failure(&mut self, threshold: u32) -> Option<u64> {
-        let now = now_unix();
-        self.failed_attempts += 1;
-        if self.failed_attempts >= threshold {
-            let minutes = Self::lockout_minutes(self.lockout_step);
-            self.lockout_until = Some(now + minutes * 60);
-            self.lockout_step = self.lockout_step.saturating_add(1);
-            self.failed_attempts = 0;
-            Some(minutes)
-        } else {
-            // Clear a stale lockout if any.
-            self.lockout_until = None;
-            None
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lockout_backoff_doubles() {
-        assert_eq!(Config::lockout_minutes(0), 5);
-        assert_eq!(Config::lockout_minutes(1), 10);
-        assert_eq!(Config::lockout_minutes(2), 20);
-        assert_eq!(Config::lockout_minutes(3), 40);
-        assert_eq!(Config::lockout_minutes(4), 80);
-        // Extremely large steps must not panic/overflow.
-        assert!(Config::lockout_minutes(1000) > 0);
-    }
-
-    #[test]
-    fn failures_arm_lockout_after_threshold() {
-        let mut cfg = Config::default();
-        for _ in 0..4 {
-            assert!(cfg.register_failure(5).is_none());
-        }
-        assert_eq!(cfg.failed_attempts, 4);
-        // Fifth failure arms a 5-minute lockout.
-        assert_eq!(cfg.register_failure(5), Some(5));
-        assert_eq!(cfg.failed_attempts, 0);
-        assert_eq!(cfg.lockout_step, 1);
-        let now = now_unix();
-        assert!(cfg.lockout_remaining(now).is_some());
-        assert!(cfg.lockout_remaining(now + 6 * 60).is_none());
-    }
-
-    #[test]
-    fn lockout_escalates_then_resets() {
-        let mut cfg = Config::default();
-        // First lockout after 5 failures -> 5 minutes.
-        for _ in 0..4 {
-            assert!(cfg.register_failure(5).is_none());
-        }
-        assert_eq!(cfg.register_failure(5), Some(5));
-        assert_eq!(cfg.lockout_step, 1);
-        // Next 5 failures -> 10 minutes.
-        for _ in 0..4 {
-            assert!(cfg.register_failure(5).is_none());
-        }
-        assert_eq!(cfg.register_failure(5), Some(10));
-        assert_eq!(cfg.lockout_step, 2);
-        cfg.reset_lockout();
-        assert_eq!(cfg.lockout_step, 0);
-        assert!(cfg.lockout_until.is_none());
     }
 }
