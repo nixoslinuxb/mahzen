@@ -705,6 +705,11 @@ pub struct EncryptedNoteApp {
     graph_nodes: Vec<PathBuf>,
     graph_edges: Vec<(usize, usize)>,
     graph_pos: Vec<(f32, f32)>,
+    /// The node currently being dragged in the graph view.
+    graph_drag: Option<usize>,
+    /// Pending displacement for each node, so linked nodes follow a dragged
+    /// node with a short, easing delay instead of jumping with it.
+    graph_chase: Vec<(f32, f32)>,
     /// Pan / zoom of the graph view (Obsidian-like navigation).
     graph_zoom: f32,
     graph_pan: egui::Vec2,
@@ -880,6 +885,8 @@ impl EncryptedNoteApp {
             graph_nodes: Vec::new(),
             graph_edges: Vec::new(),
             graph_pos: Vec::new(),
+            graph_drag: None,
+            graph_chase: Vec::new(),
             graph_zoom: 1.0,
             graph_pan: egui::Vec2::ZERO,
             graph_local: false,
@@ -1132,6 +1139,8 @@ impl EncryptedNoteApp {
             self.config.graph_repulsion,
             self.config.graph_attraction,
         );
+        self.graph_drag = None;
+        self.graph_chase = vec![(0.0, 0.0); nodes.len()];
         self.graph_nodes = nodes;
         self.graph_edges = edges;
     }
@@ -6717,7 +6726,6 @@ impl EncryptedNoteApp {
         let line = ui.visuals().hyperlink_color;
         let weak = ui.visuals().weak_text_color();
         let nodes = self.graph_nodes.clone();
-        let pos = self.graph_pos.clone();
         let edges = self.graph_edges.clone();
         let active = self.tabs.get(self.active).map(|t| t.path.clone());
 
@@ -6781,7 +6789,8 @@ impl EncryptedNoteApp {
             ui.id().with("graph_nav"),
             egui::Sense::click_and_drag(),
         );
-        if nav.dragged() {
+        // Panning only when the drag did not start on a node.
+        if nav.dragged() && self.graph_drag.is_none() {
             self.graph_pan += nav.drag_delta();
         }
         if nav.hovered() {
@@ -6792,6 +6801,21 @@ impl EncryptedNoteApp {
         }
         let center = rect.center() + self.graph_pan;
         let scale = base * self.graph_zoom;
+
+        // Linked nodes ease toward the space a dragged node vacated, which
+        // reads as a short delay instead of the whole graph jumping at once.
+        let mut chasing = false;
+        for (i, pending) in self.graph_chase.iter_mut().enumerate() {
+            if let Some(p) = self.graph_pos.get_mut(i) {
+                if chase_step(p, pending, 0.22) {
+                    chasing = true;
+                }
+            }
+        }
+        if chasing {
+            ui.ctx().request_repaint();
+        }
+        let pos = self.graph_pos.clone();
 
         {
             // Straight links, so linked notes meet at clean junctions.
@@ -6838,7 +6862,47 @@ impl EncryptedNoteApp {
             // Node size scales with how many links it has (like Obsidian).
             let r = 4.0 + (degree[i] as f32).sqrt() * 1.8;
             let node_rect = egui::Rect::from_center_size(point, egui::vec2(r * 2.0, r * 2.0));
-            let resp = ui.interact(node_rect, ui.id().with(("gnode", i)), egui::Sense::click());
+            let resp = ui.interact(
+                node_rect,
+                ui.id().with(("gnode", i)),
+                egui::Sense::click_and_drag(),
+            );
+            if resp.drag_started() {
+                self.graph_drag = Some(i);
+            }
+            if resp.dragged() && self.graph_drag == Some(i) {
+                let delta = resp.drag_delta() / scale.max(0.01);
+                if let Some(p) = self.graph_pos.get_mut(i) {
+                    p.0 += delta.x;
+                    p.1 += delta.y;
+                }
+                // Neighbours inherit most of the movement, but as a pending
+                // offset that is paid out over the next few frames.
+                for (a, b) in &edges {
+                    let other = if *a == i {
+                        Some(*b)
+                    } else if *b == i {
+                        Some(*a)
+                    } else {
+                        None
+                    };
+                    if let Some(j) = other {
+                        if let Some(chase) = self.graph_chase.get_mut(j) {
+                            chase.0 += delta.x * 0.75;
+                            chase.1 += delta.y * 0.75;
+                        }
+                    }
+                }
+            }
+            if resp.drag_stopped() && self.graph_drag == Some(i) {
+                self.graph_drag = None;
+            }
+            if resp.hovered() && self.graph_drag.is_none() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            if resp.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            }
             let is_active = active.as_deref() == Some(path.as_path());
             let color = if is_active {
                 theme::ACCENT
@@ -10255,6 +10319,19 @@ fn apply_multi_edit(
     (chars.into_iter().collect(), rest)
 }
 
+/// Advance one node's delayed follow motion: move `pos` a fraction of the
+/// pending offset and return the remaining offset. Returns `true` while the
+/// node still has motion left.
+fn chase_step(pos: &mut (f32, f32), pending: &mut (f32, f32), step: f32) -> bool {
+    let dx = pending.0 * step;
+    let dy = pending.1 * step;
+    pos.0 += dx;
+    pos.1 += dy;
+    pending.0 -= dx;
+    pending.1 -= dy;
+    pending.0.abs() > 1e-4 || pending.1.abs() > 1e-4
+}
+
 /// Split `ui`'s remaining area into a left and right column with a draggable
 /// divider. `frac` is the right column's share (persisted by the caller).
 /// Returns `None` when there is not enough room, so the caller can fall back to
@@ -10861,6 +10938,22 @@ mod tests {
         let ci = load_color_image(&path).unwrap();
         assert_eq!(ci.size, [2, 1]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chase_delays_the_followers() {
+        // A follower receiving a 1.0 offset moves only a fraction per frame and
+        // keeps moving (with a decaying remainder) for several frames.
+        let mut pos = (0.0f32, 0.0f32);
+        let mut pending = (1.0f32, 0.0f32);
+        let mut frames = 0;
+        while chase_step(&mut pos, &mut pending, 0.22) {
+            frames += 1;
+            assert!(frames < 200, "chase must converge");
+        }
+        assert!(frames > 2, "movement should be spread over several frames");
+        assert!((pos.0 - 1.0).abs() < 0.01, "followers end up at the target");
+        assert!(pending.0.abs() < 1e-4);
     }
 
     #[test]
