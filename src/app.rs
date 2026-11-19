@@ -226,6 +226,114 @@ fn canvas_color(code: &str) -> Option<Color32> {
 
 const CANVAS_COLORS: [&str; 6] = ["1", "2", "3", "4", "5", "6"];
 
+/// Icon choices for notes (name, glyph), shown in the icon picker.
+const NOTE_ICONS: &[(&str, &str)] = &[
+    ("note", "📝"),
+    ("book", "📖"),
+    ("notebook", "📓"),
+    ("journal", "📔"),
+    ("clipboard", "📋"),
+    ("file", "📄"),
+    ("folder", "📁"),
+    ("inbox", "📥"),
+    ("archive", "🗄"),
+    ("idea", "💡"),
+    ("star", "⭐"),
+    ("heart", "❤️"),
+    ("fire", "🔥"),
+    ("rocket", "🚀"),
+    ("bulb", "🔆"),
+    ("pin", "📌"),
+    ("flag", "🚩"),
+    ("check", "✅"),
+    ("warning", "⚠️"),
+    ("bug", "🐞"),
+    ("code", "💻"),
+    ("terminal", "🖥"),
+    ("database", "🗃"),
+    ("chart", "📊"),
+    ("graph", "📈"),
+    ("calendar", "📅"),
+    ("clock", "⏰"),
+    ("target", "🎯"),
+    ("trophy", "🏆"),
+    ("gift", "🎁"),
+    ("bookmark", "🔖"),
+    ("key", "🔑"),
+    ("lock", "🔒"),
+    ("shield", "🛡"),
+    ("gear", "⚙️"),
+    ("wrench", "🔧"),
+    ("hammer", "🔨"),
+    ("flask", "🧪"),
+    ("dna", "🧬"),
+    ("atom", "⚛️"),
+    ("math", "➗"),
+    ("globe", "🌍"),
+    ("map", "🗺"),
+    ("compass", "🧭"),
+    ("mountain", "⛰"),
+    ("tree", "🌳"),
+    ("leaf", "🍃"),
+    ("flower", "🌸"),
+    ("sun", "☀️"),
+    ("moon", "🌙"),
+    ("cloud", "☁️"),
+    ("storm", "⛈"),
+    ("wave", "🌊"),
+    ("fish", "🐟"),
+    ("bird", "🐦"),
+    ("cat", "🐈"),
+    ("dog", "🐕"),
+    ("coffee", "☕"),
+    ("tea", "🍵"),
+    ("food", "🍽"),
+    ("music", "🎵"),
+    ("headphones", "🎧"),
+    ("mic", "🎤"),
+    ("camera", "📷"),
+    ("video", "🎬"),
+    ("game", "🎮"),
+    ("art", "🎨"),
+    ("pencil", "✏️"),
+    ("brush", "🖌"),
+    ("ruler", "📐"),
+    ("scissors", "✂️"),
+    ("paperclip", "📎"),
+    ("money", "💰"),
+    ("card", "💳"),
+    ("bank", "🏦"),
+    ("shopping", "🛒"),
+    ("mail", "📧"),
+    ("phone", "📱"),
+    ("chat", "💬"),
+    ("people", "👥"),
+    ("person", "👤"),
+    ("home", "🏠"),
+    ("office", "🏢"),
+    ("school", "🎓"),
+    ("health", "🩺"),
+    ("pill", "💊"),
+    ("fitness", "🏋"),
+    ("run", "🏃"),
+    ("travel", "✈️"),
+    ("car", "🚗"),
+    ("train", "🚆"),
+    ("ship", "🚢"),
+    ("package", "📦"),
+    ("tool", "🛠"),
+    ("link", "🔗"),
+    ("tag", "🏷"),
+    ("trash", "🗑"),
+    ("recycle", "♻️"),
+    ("question", "❓"),
+    ("info", "ℹ️"),
+    ("memo", "🧾"),
+    ("scroll", "📜"),
+    ("books", "📚"),
+    ("newspaper", "📰"),
+];
+
 /// Text/highlight colours offered by the formatting bar.
 const RICH_COLORS: &[(&str, &str)] = &[
     ("Red", "#e05f5f"),
@@ -341,6 +449,7 @@ enum Command {
     ToggleLinkedPane,
     OpenInNewView,
     ToggleStackedTabs,
+    SetNoteIcon,
     ExportMarkdown,
     ImportMarkdown,
     PrintExport,
@@ -351,7 +460,7 @@ enum Command {
 }
 
 impl Command {
-    const ALL: [Command; 39] = [
+    const ALL: [Command; 40] = [
         Command::NewNote,
         Command::NewSubnote,
         Command::OpenVault,
@@ -384,6 +493,7 @@ impl Command {
         Command::ToggleLinkedPane,
         Command::OpenInNewView,
         Command::ToggleStackedTabs,
+        Command::SetNoteIcon,
         Command::ExportMarkdown,
         Command::ImportMarkdown,
         Command::PrintExport,
@@ -427,6 +537,7 @@ impl Command {
             Command::ToggleLinkedPane => crate::tr!("Toggle linked second pane"),
             Command::OpenInNewView => crate::tr!("Open current note in a new view"),
             Command::ToggleStackedTabs => crate::tr!("Toggle stacked tabs"),
+            Command::SetNoteIcon => crate::tr!("Set note icon…"),
             Command::ExportMarkdown => crate::tr!("Export vault as plain Markdown…"),
             Command::ImportMarkdown => crate::tr!("Import Markdown / Obsidian vault…"),
             Command::PrintExport => crate::tr!("Export current note (PDF / HTML / print)…"),
@@ -471,6 +582,7 @@ impl Command {
             Command::ToggleLinkedPane => Icon::PanelRight,
             Command::OpenInNewView => Icon::Split,
             Command::ToggleStackedTabs => Icon::PanelRight,
+            Command::SetNoteIcon => Icon::Star,
             Command::ExportMarkdown => Icon::Download,
             Command::ImportMarkdown => Icon::Upload,
             Command::PrintExport => Icon::File,
@@ -591,6 +703,8 @@ pub struct EncryptedNoteApp {
     index: NoteIndex,
     metas: BTreeMap<PathBuf, frontmatter::Meta>,
     titles: BTreeMap<PathBuf, String>,
+    /// Per-note icon from frontmatter (`icon:`), for the sidebar and tabs.
+    note_icons: BTreeMap<PathBuf, String>,
 
     // Views
     show_graph: bool,
@@ -641,6 +755,10 @@ pub struct EncryptedNoteApp {
     stacked_tabs: bool,
     /// A tab being dragged between panes.
     dragging_tab: Option<usize>,
+    /// Note icon picker.
+    icon_picker_open: bool,
+    icon_picker_note: Option<PathBuf>,
+    icon_filter: String,
     /// Legacy encrypted vault awaiting one-time decryption.
     legacy_migration: Option<LegacyMigration>,
     /// External-change watcher for the vault.
@@ -818,6 +936,7 @@ impl EncryptedNoteApp {
             index: NoteIndex::default(),
             metas: BTreeMap::new(),
             titles: BTreeMap::new(),
+            note_icons: BTreeMap::new(),
             show_graph: false,
             palette: None,
             vim: crate::vim::Vim::new(),
@@ -853,6 +972,9 @@ impl EncryptedNoteApp {
             stacked_tabs: config_stacked,
             dragging_tab: None,
             legacy_migration: None,
+            icon_picker_open: false,
+            icon_picker_note: None,
+            icon_filter: String::new(),
             watcher: crate::watch::Watcher::new(),
             conflicts: HashSet::new(),
             last_watch_poll: 0.0,
@@ -1055,6 +1177,7 @@ impl EncryptedNoteApp {
             .unwrap_or_default();
         let mut metas = BTreeMap::new();
         let mut titles = BTreeMap::new();
+        let mut icons_map: BTreeMap<PathBuf, String> = BTreeMap::new();
         let mut entries = Vec::new();
         for (path, stem) in paths {
             let text = self.read_note(&path).unwrap_or_default();
@@ -1068,10 +1191,20 @@ impl EncryptedNoteApp {
                 tags: meta.tags.clone(),
                 links,
             });
+            if let Some(icon) = meta
+                .props
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("icon"))
+                .map(|(_, v)| v.display())
+                .filter(|v| !v.trim().is_empty())
+            {
+                icons_map.insert(path.clone(), icon);
+            }
             titles.insert(path.clone(), title);
             metas.insert(path, meta);
         }
         self.index = NoteIndex::build(entries);
+        self.note_icons = icons_map;
         self.titles = titles;
         self.metas = metas;
         self.rebuild_graph();
@@ -2746,6 +2879,11 @@ impl EncryptedNoteApp {
             Command::NoteComposer => self.open_composer(),
             Command::VoiceNote => self.toggle_voice_note(),
             Command::OpenInNewView => self.open_in_new_view(),
+            Command::SetNoteIcon => {
+                self.icon_picker_open = true;
+                self.icon_picker_note = self.tabs.get(self.active).map(|t| t.path.clone());
+                self.icon_filter.clear();
+            }
             Command::ToggleStackedTabs => {
                 self.stacked_tabs = !self.stacked_tabs;
                 self.config.stacked_tabs = self.stacked_tabs;
@@ -4458,6 +4596,112 @@ impl EncryptedNoteApp {
         }
     }
 
+    /// Store (or clear) a note's icon in its frontmatter `icon:` field.
+    fn set_note_icon(&mut self, path: PathBuf, icon: Option<String>) {
+        let Some(mut text) = self.read_note(&path) else {
+            self.status = crate::tr!("Could not read note").into();
+            return;
+        };
+        text = match icon {
+            Some(ic) if !ic.trim().is_empty() => {
+                frontmatter::set_property(&text, "icon", frontmatter::PropValue::Text(ic))
+            }
+            _ => frontmatter::remove_property(&text, "icon"),
+        };
+        if let Err(e) = self.write_note(&path, &text) {
+            self.status = format!("{e}");
+            return;
+        }
+        let saved = text.clone();
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.path == path) {
+            if tab.text != text {
+                tab.text = text;
+                tab.saved = saved;
+            }
+        }
+        self.rebuild_index();
+        self.status = crate::tr!("Note icon updated").into();
+    }
+
+    /// Emoji icon picker for the active note.
+    fn icon_picker_dialog(&mut self, ctx: &egui::Context) {
+        if !self.icon_picker_open {
+            return;
+        }
+        let mut open = true;
+        let note = self.icon_picker_note.clone();
+        let current = note.as_ref().and_then(|p| self.note_icons.get(p).cloned());
+        egui::Window::new(crate::tr!("Note icon"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(430.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    RichText::new(crate::tr!(
+                        "Pick an icon; it is stored as `icon:` in the note's frontmatter."
+                    ))
+                    .small()
+                    .color(theme::TEXT_MUTED),
+                );
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.icon_filter)
+                        .hint_text(crate::tr!("Search or paste an emoji"))
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(4.0);
+                let filter = self.icon_filter.trim().to_lowercase();
+                let mut chosen: Option<String> = None;
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+                            for (name, glyph) in NOTE_ICONS {
+                                if !filter.is_empty()
+                                    && !name.contains(&filter)
+                                    && *glyph != filter.as_str()
+                                {
+                                    continue;
+                                }
+                                let selected = current.as_deref() == Some(*glyph);
+                                if ui
+                                    .add(
+                                        egui::Button::new(RichText::new(*glyph).size(19.0))
+                                            .frame(selected)
+                                            .min_size(egui::vec2(28.0, 28.0)),
+                                    )
+                                    .on_hover_text(*name)
+                                    .clicked()
+                                {
+                                    chosen = Some((*glyph).to_string());
+                                }
+                            }
+                        });
+                    });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button(crate::tr!("Remove icon")).clicked() {
+                        chosen = Some(String::new());
+                    }
+                    if ui.button(crate::tr!("Close")).clicked() {
+                        self.icon_picker_open = false;
+                    }
+                });
+                if let Some(ic) = chosen {
+                    if let Some(path) = note.clone() {
+                        self.set_note_icon(path, Some(ic).filter(|s| !s.is_empty()));
+                    }
+                    self.icon_picker_open = false;
+                }
+            });
+        if !open {
+            self.icon_picker_open = false;
+        }
+    }
+
     /// One-time screen that converts an old encrypted vault to plain Markdown.
     fn legacy_migration_ui(&mut self, ctx: &egui::Context) {
         let Some(mut mig) = self.legacy_migration.take() else {
@@ -4932,6 +5176,7 @@ impl EncryptedNoteApp {
                     let tree = self.tree.clone();
                     let selected = self.tabs.get(self.active).map(|t| t.path.clone());
                     let titles = self.titles.clone();
+                    let note_icons = self.note_icons.clone();
                     // Excerpt lines shown under the selected note, like LYT's
                     // inline file preview.
                     let excerpt: Option<Vec<String>> =
@@ -4959,6 +5204,7 @@ impl EncryptedNoteApp {
                                 selected.as_deref(),
                                 &mut self.expanded_dirs,
                                 &titles,
+                                &note_icons,
                                 excerpt.as_deref(),
                                 &mut actions,
                             );
@@ -5942,6 +6188,12 @@ impl EncryptedNoteApp {
             self.stacked_tab_strip(ui);
             return;
         }
+        let tab_icons: std::collections::BTreeMap<usize, String> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| self.note_icons.get(&t.path).map(|ic| (i, ic.clone())))
+            .collect();
         let mut to_close: Option<usize> = None;
         let mut select: Option<usize> = None;
         let mut cycle_click: Option<usize> = None;
@@ -5991,6 +6243,9 @@ impl EncryptedNoteApp {
                                 ui.spacing_mut().item_spacing.x = 5.0;
                                 if dirty {
                                     icons::icon(ui, Icon::Dot, 6.0, theme::ACCENT);
+                                }
+                                if let Some(icon) = tab_icons.get(&i) {
+                                    ui.label(RichText::new(icon).size(11.5));
                                 }
                                 ui.label(RichText::new(&title).size(12.0).color(text_color));
                                 // Per-tab view toggle, top-right of the tab:
@@ -6114,6 +6369,12 @@ impl EncryptedNoteApp {
 
     /// Full-width rows of tabs in a left column (Obsidian's stacked tabs).
     fn stacked_tab_strip(&mut self, ui: &mut egui::Ui) {
+        let tab_icons: std::collections::BTreeMap<usize, String> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| self.note_icons.get(&t.path).map(|ic| (i, ic.clone())))
+            .collect();
         let mut to_close: Option<usize> = None;
         let mut select: Option<usize> = None;
         let mut cycle_click: Option<usize> = None;
@@ -6154,6 +6415,9 @@ impl EncryptedNoteApp {
                                         ui.spacing_mut().item_spacing.x = 5.0;
                                         if dirty {
                                             icons::icon(ui, Icon::Dot, 6.0, theme::ACCENT);
+                                        }
+                                        if let Some(icon) = tab_icons.get(&i) {
+                                            ui.label(RichText::new(icon).size(11.5));
                                         }
                                         let color = if selected {
                                             theme::TEXT
@@ -9010,6 +9274,7 @@ impl EncryptedNoteApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.icon_picker_dialog(ctx);
         self.portability_dialog(ctx);
         self.print_dialog(ctx);
         self.settings_dialog(ctx);
@@ -10079,12 +10344,14 @@ fn collect_dir_rels(node: &TreeNode, out: &mut HashSet<PathBuf>) {
 }
 
 /// Recursively draw a vault tree, collecting any requested actions.
+#[allow(clippy::too_many_arguments)]
 fn show_tree(
     ui: &mut egui::Ui,
     node: &TreeNode,
     selected: Option<&Path>,
     expanded: &mut HashSet<PathBuf>,
     titles: &BTreeMap<PathBuf, String>,
+    note_icons: &BTreeMap<PathBuf, String>,
     excerpt: Option<&[String]>,
     actions: &mut TreeActions,
 ) {
@@ -10118,7 +10385,9 @@ fn show_tree(
         }
         if is_open {
             ui.indent(dir.rel.clone(), |ui| {
-                show_tree(ui, dir, selected, expanded, titles, excerpt, actions);
+                show_tree(
+                    ui, dir, selected, expanded, titles, note_icons, excerpt, actions,
+                );
             });
         }
     }
@@ -10135,7 +10404,15 @@ fn show_tree(
             .is_some_and(|p| row.contains(p));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            icons::icon(ui, Icon::File, 14.0, weak);
+            // A note can carry its own emoji/icon (frontmatter `icon:`).
+            match note_icons.get(&file.path) {
+                Some(icon) => {
+                    ui.label(RichText::new(icon).size(12.5));
+                }
+                None => {
+                    icons::icon(ui, Icon::File, 14.0, weak);
+                }
+            }
             let label = titles
                 .get(&file.path)
                 .cloned()

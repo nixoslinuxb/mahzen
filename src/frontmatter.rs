@@ -555,6 +555,18 @@ mod tests {
     }
 
     #[test]
+    fn note_icon_roundtrips_through_frontmatter() {
+        let text = "# Hello\n\nbody\n";
+        let with_icon = set_property(text, "icon", PropValue::Text("📖".into()));
+        assert!(with_icon.contains("icon: 📖"));
+        let props = properties(&with_icon);
+        assert_eq!(props[0].1, PropValue::Text("📖".into()));
+        let cleared = remove_property(&with_icon, "icon");
+        assert!(!cleared.contains("icon:"));
+        assert!(cleared.contains("# Hello"));
+    }
+
+    #[test]
     fn renames_tags_in_frontmatter_and_body() {
         let text = "---\ntags: [work, work/rust, other]\n---\n# heading\nbody #work and #work/rust and #workshop\n";
         let out = rename_tag(text, "work", Some("job"));

@@ -82,6 +82,11 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   line shows its raw markup in full rather than hiding the non-caret spans, so it is a
   *line-accurate* hybrid, not character-accurate WYSIWYG. True WYSIWYG needs a custom
   rich-text engine (not built).
+- **Per-note icons** — every note can carry an emoji icon, stored as `icon:` in
+  its frontmatter (*Set note icon…* in the palette, or add the property). The
+  icon shows in the sidebar tree, in tabs and survives editing; a theme-less
+  note keeps the generic file glyph. Icon changes rebuild the index so tabs and
+  the tree update immediately.
 - **Rich-text formatting bar** — a Trilium-style toolbar sits above the editor
   with a paragraph-style menu (text, H1–H3, bullets, numbered, checkbox,
   quote), a **font** menu (sans/mono), a **font size** menu (12–32 pt), bold,
