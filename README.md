@@ -87,6 +87,13 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   icon shows in the sidebar tree, in tabs and survives editing; a theme-less
   note keeps the generic file glyph. Icon changes rebuild the index so tabs and
   the tree update immediately.
+- **Images inside tables** — a table cell whose only content is an image
+  (`![[assets/a.png]]`, `![[a.png|300]]`, `![[a.png|300x200]]` or
+  `![](assets/a.png)`) renders as a **real image widget** inside the cell, so
+  images can sit **side by side in a grid**. Drag an image to nudge it inside
+  its cell; drag the accent handle in its corner to resize it. The size and
+  offset are remembered per image in `media-layout.json`. Images inside a table
+  are no longer duplicated in the attachment strip above the note.
 - **Rich-text formatting bar** — a Trilium-style toolbar sits above the editor
   with a paragraph-style menu (text, H1–H3, bullets, numbered, checkbox,
   quote), a **font** menu (sans/mono), a **font size** menu (12–32 pt), bold,

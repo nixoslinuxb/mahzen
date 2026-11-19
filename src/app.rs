@@ -334,6 +334,15 @@ const NOTE_ICONS: &[(&str, &str)] = &[
     ("newspaper", "📰"),
 ];
 
+/// Layout updates collected while a markdown pass paints table images.
+type PendingLayouts = std::rc::Rc<std::cell::RefCell<Vec<(String, media::Layout)>>>;
+
+thread_local! {
+    /// Layout changes collected by the media painter during a render pass.
+    static PENDING_LAYOUTS: std::cell::RefCell<Option<PendingLayouts>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Text/highlight colours offered by the formatting bar.
 const RICH_COLORS: &[(&str, &str)] = &[
     ("Red", "#e05f5f"),
@@ -4157,7 +4166,8 @@ impl EncryptedNoteApp {
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
             return;
         };
-        let targets = media_links(text);
+        // Images placed inside a table are drawn by the table itself.
+        let targets = media_links_outside_tables(text);
         if targets.is_empty() {
             return;
         }
@@ -4188,6 +4198,72 @@ impl EncryptedNoteApp {
         if shown > 0 {
             ui.separator();
         }
+    }
+
+    /// Load textures for every image referenced in `text` (including images
+    /// that live inside table cells, which are drawn by the table renderer).
+    fn warm_media(&mut self, ctx: &egui::Context, text: &str) {
+        let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
+            return;
+        };
+        for media in media_links(text) {
+            let Some(path) = vault_file(&root, &media.path) else {
+                continue;
+            };
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if is_image_ext(&ext) && path.is_file() {
+                let _ = self.media_texture(ctx, &path);
+            }
+        }
+    }
+
+    /// Build the callback the markdown renderer uses to draw images inside
+    /// table cells (drag to move, corner handle to resize).
+    fn media_painter(&self) -> markdown::MediaPainter {
+        let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
+            return std::rc::Rc::new(|_ui, _p, _w, _h| false);
+        };
+        // Snapshot what the painter needs so it can own the data (the renderer
+        // runs while `self` is borrowed immutably).
+        let textures: HashMap<PathBuf, egui::TextureHandle> = self.media_textures.clone();
+        let layouts: HashMap<String, media::Layout> = self.media_layout.items.clone();
+        let pending: PendingLayouts = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        PENDING_LAYOUTS.with(|p| *p.borrow_mut() = Some(pending.clone()));
+        std::rc::Rc::new(move |ui: &mut egui::Ui, target: &str, w, h| -> bool {
+            let Some(path) = vault_file(&root, target) else {
+                return false;
+            };
+            let Some(tex) = textures.get(&path) else {
+                return false;
+            };
+            let key = path.to_string_lossy().to_string();
+            let mut layout = layouts.get(&key).copied().unwrap_or_default();
+            let (drawn, changed) = draw_inline_image(ui, &key, tex, &mut layout, w, h);
+            if changed {
+                pending.borrow_mut().push((key, layout));
+            }
+            drawn
+        })
+    }
+
+    /// Persist layout changes produced while rendering (called after a pass).
+    fn flush_media_layouts(&mut self) {
+        let taken = PENDING_LAYOUTS.with(|p| p.borrow_mut().take());
+        let Some(pending) = taken else {
+            return;
+        };
+        let items = pending.borrow().clone();
+        if items.is_empty() {
+            return;
+        }
+        for (key, layout) in items {
+            self.media_layout.set(&key, layout);
+        }
+        self.media_layout.save();
     }
 
     /// Get (decoding on first use) the GPU texture for an image attachment.
@@ -8163,6 +8239,10 @@ impl EncryptedNoteApp {
                 render_special_fence(ui, lang, code)
             }
         };
+        // Make sure every image (including those inside tables) has a texture,
+        // then hand the renderer a painter for table-cell images.
+        self.warm_media(ui.ctx(), &body);
+        let media_painter = self.media_painter();
         let mut wiki: Vec<String> = Vec::new();
         let mut external: Vec<String> = Vec::new();
         egui::ScrollArea::vertical()
@@ -8181,7 +8261,9 @@ impl EncryptedNoteApp {
                     Some((title, body))
                 };
                 ui.add_space(4.0);
+                markdown::set_media_painter(Some(media_painter.clone()));
                 let clicked = markdown::render(ui, &body, size, &resolver, &fence, 0);
+                markdown::set_media_painter(None);
                 for c in clicked {
                     match c {
                         markdown::LinkClick::Wiki(t) => wiki.push(t),
@@ -8189,6 +8271,7 @@ impl EncryptedNoteApp {
                     }
                 }
             });
+        self.flush_media_layouts();
         for target in wiki {
             if let Some(path) = self.index.resolve(&target) {
                 if pane == 0 && self.config.linked_pane {
@@ -8237,6 +8320,8 @@ impl EncryptedNoteApp {
         let lines: Vec<String> = raw.split('\n').map(String::from).collect();
         let active = active_line.min(lines.len().saturating_sub(1));
 
+        self.warm_media(ui.ctx(), &raw);
+        let media_painter = self.media_painter();
         let no_embed = |_t: &str| -> Option<(String, String)> { None };
         let docs = self.query_docs();
         let fence = move |ui: &mut egui::Ui, lang: &str, code: &str| -> bool {
@@ -8261,7 +8346,9 @@ impl EncryptedNoteApp {
                     if i == active {
                         if !buffer.is_empty() {
                             let md = buffer.join("\n");
+                            markdown::set_media_painter(Some(media_painter.clone()));
                             markdown::render(ui, &md, size, &no_embed, &fence, 0);
+                            markdown::set_media_painter(None);
                             buffer.clear();
                         }
                         let mut tmp = line.clone();
@@ -8316,10 +8403,13 @@ impl EncryptedNoteApp {
                 }
                 if !buffer.is_empty() {
                     let md = buffer.join("\n");
+                    markdown::set_media_painter(Some(media_painter.clone()));
                     markdown::render(ui, &md, size, &no_embed, &fence, 0);
+                    markdown::set_media_painter(None);
                 }
             });
 
+        self.flush_media_layouts();
         if let Some(t) = new_text {
             self.tabs[idx].text = t;
         }
@@ -10483,6 +10573,110 @@ fn parse_size(spec: &str) -> (Option<f32>, Option<f32>) {
     } else {
         (spec.parse().ok(), None)
     }
+}
+
+/// Like [`media_links`], but skips references that sit on a table row, since the
+/// table renderer draws those itself.
+fn media_links_outside_tables(text: &str) -> Vec<MediaRef> {
+    let mut out: Vec<MediaRef> = Vec::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with('|') {
+            continue;
+        }
+        for m in media_links(line) {
+            if !out.iter().any(|x| x.path == m.path) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// Draw one image widget for a table cell. Returns `(drawn, layout_changed)`.
+fn draw_inline_image(
+    ui: &mut egui::Ui,
+    key: &str,
+    tex: &egui::TextureHandle,
+    layout: &mut media::Layout,
+    explicit_w: Option<f32>,
+    explicit_h: Option<f32>,
+) -> (bool, bool) {
+    let mut changed = false;
+    let avail = ui.available_width().max(48.0);
+    let size = tex.size_vec2();
+    let aspect = if size.x > 0.0 { size.y / size.x } else { 0.75 };
+    let max_h = (ui.ctx().screen_rect().height() * 0.5).max(120.0);
+    let mut w = if let Some(ew) = explicit_w {
+        ew.clamp(24.0, avail * 4.0)
+    } else if layout.w > 1.0 {
+        layout.w.clamp(24.0, avail * 4.0)
+    } else {
+        size.x.min(avail)
+    };
+    let mut h = if let Some(eh) = explicit_h {
+        eh.clamp(24.0, max_h)
+    } else {
+        (w * aspect).max(24.0)
+    };
+    if h > max_h {
+        w *= max_h / h;
+        h = max_h;
+    }
+
+    let (band, _) = ui.allocate_exact_size(egui::vec2(avail, h + 4.0), egui::Sense::hover());
+    let img_rect = egui::Rect::from_min_size(band.min, egui::vec2(w, h));
+
+    let drag = ui.interact(
+        img_rect,
+        ui.id().with(("cellimg", key)),
+        egui::Sense::click_and_drag(),
+    );
+    if drag.dragged() {
+        let d = drag.drag_delta();
+        layout.ox += d.x;
+        layout.oy += d.y;
+        changed = true;
+    }
+    if drag.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+
+    let hs = 13.0;
+    let hrect = egui::Rect::from_min_size(img_rect.max - egui::vec2(hs, hs), egui::vec2(hs, hs));
+    let hdrag = ui.interact(
+        hrect,
+        ui.id().with(("cellimgresize", key)),
+        egui::Sense::drag(),
+    );
+    if hdrag.dragged() {
+        layout.w = (w + hdrag.drag_delta().x).clamp(24.0, avail * 4.0);
+        changed = true;
+    }
+    if hdrag.hovered() || hdrag.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+    }
+
+    let ox = if layout.ox.abs() > 0.5 {
+        layout.ox
+    } else {
+        0.0
+    };
+    let oy = if layout.oy.abs() > 0.5 {
+        layout.oy
+    } else {
+        0.0
+    };
+    let draw_rect = img_rect.translate(egui::vec2(ox, oy));
+    egui::Image::new(egui::load::SizedTexture::from_handle(tex))
+        .fit_to_exact_size(egui::vec2(w, h))
+        .rounding(egui::Rounding::same(4.0))
+        .paint_at(ui, draw_rect);
+    ui.painter().rect_filled(
+        egui::Rect::from_min_size(draw_rect.max - egui::vec2(9.0, 9.0), egui::vec2(7.0, 7.0)),
+        egui::Rounding::same(2.0),
+        theme::ACCENT,
+    );
+    (true, changed)
 }
 
 fn media_links(text: &str) -> Vec<MediaRef> {

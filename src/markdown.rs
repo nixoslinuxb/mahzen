@@ -8,11 +8,72 @@
 
 use eframe::egui::{self, Color32, RichText, Sense, Vec2};
 
+/// A callback the host app installs so table cells (and other blocks) can draw
+/// real media widgets (images with drag/resize) instead of text.
+pub type MediaPainter = std::rc::Rc<dyn Fn(&mut egui::Ui, &str, Option<f32>, Option<f32>) -> bool>;
+
 thread_local! {
+    static MEDIA_PAINTER: std::cell::RefCell<Option<MediaPainter>> =
+        const { std::cell::RefCell::new(None) };
     /// Equation numbers and `\label` targets for the note being rendered.
     static EQ_COUNTER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static EQ_LABELS: std::cell::RefCell<std::collections::HashMap<String, usize>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Install (or clear) the media painter for the current render pass.
+pub fn set_media_painter(painter: Option<MediaPainter>) {
+    MEDIA_PAINTER.with(|p| *p.borrow_mut() = painter);
+}
+
+/// Try to paint a cell that consists of a single media reference.
+///
+/// Recognises `![[target|300]]`, `![[target|300x200]]` and `![alt](path)`.
+/// Returns `true` when the host actually drew something.
+fn paint_cell_media(ui: &mut egui::Ui, cell: &str) -> bool {
+    let painter = MEDIA_PAINTER.with(|p| p.borrow().clone());
+    let Some(painter) = painter else {
+        return false;
+    };
+    let t = cell.trim();
+    let (target, size) = if let Some(rest) = t.strip_prefix("![[") {
+        let Some(inner) = rest.strip_suffix("]]") else {
+            return false;
+        };
+        let mut parts = inner.split('|');
+        let path = parts.next().unwrap_or("").trim();
+        let spec = parts.next().map(str::trim).unwrap_or("");
+        (path, spec)
+    } else if let Some(rest) = t.strip_prefix("![") {
+        let Some(close) = rest.find("](") else {
+            return false;
+        };
+        let Some(end) = rest[close + 2..].find(')') else {
+            return false;
+        };
+        let path = rest[close + 2..close + 2 + end].trim();
+        (path, "")
+    } else {
+        return false;
+    };
+    if target.is_empty() {
+        return false;
+    }
+    let (w, h) = parse_size_spec(size);
+    painter(ui, target, w, h)
+}
+
+/// Parse `300` or `300x200`.
+fn parse_size_spec(spec: &str) -> (Option<f32>, Option<f32>) {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return (None, None);
+    }
+    if let Some((w, h)) = spec.split_once('x') {
+        (w.trim().parse().ok(), h.trim().parse().ok())
+    } else {
+        (spec.parse().ok(), None)
+    }
 }
 
 /// Reset per-note equation state (called at the top level of `render`).
@@ -1265,10 +1326,16 @@ fn render_table(
                                 frame = frame.fill(bg);
                             }
                             frame.show(ui, |ui| {
-                                ui.set_min_width(col_w - pad * 2.0);
-                                ui.set_max_width(col_w - pad * 2.0);
+                                let inner_w = (col_w - pad * 2.0).max(40.0);
+                                ui.set_min_width(inner_w);
+                                ui.set_max_width(inner_w);
                                 ui.vertical(|ui| {
                                     ui.style_mut().wrap = Some(true);
+                                    // A cell holding a single image is drawn as
+                                    // a real, resizable image widget.
+                                    if !is_header && paint_cell_media(ui, cell) {
+                                        return;
+                                    }
                                     if is_header {
                                         render_segments_bold(ui, cell, base_size, clicked, embed);
                                     } else {
@@ -2189,6 +2256,14 @@ mod tests {
         assert_eq!(hot.0, Some(Color32::from_rgb(0xe0, 0x5f, 0x5f)));
         assert!((hot.1.unwrap() - 15.0).abs() < 0.01, "20px → 15pt");
         assert!(hot.2);
+    }
+
+    #[test]
+    fn parses_cell_media_references() {
+        assert_eq!(parse_size_spec("300"), (Some(300.0), None));
+        assert_eq!(parse_size_spec("300x200"), (Some(300.0), Some(200.0)));
+        assert_eq!(parse_size_spec(""), (None, None));
+        assert_eq!(parse_size_spec("wide"), (None, None));
     }
 
     #[test]
