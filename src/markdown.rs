@@ -169,6 +169,11 @@ enum Inline {
         italic: bool,
         strike: bool,
         code: bool,
+        /// Rich-text overrides from an inline `<span style="…">`.
+        color: Option<Color32>,
+        size: Option<f32>,
+        mono: bool,
+        bg: Option<Color32>,
     },
     Wiki {
         target: String,
@@ -228,6 +233,153 @@ pub fn headings(text: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Rich-text overrides carried by an inline `<span style="…">`.
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct SpanStyle {
+    pub color: Option<Color32>,
+    pub size: Option<f32>,
+    pub mono: bool,
+    pub bold: bool,
+    pub italic: bool,
+    pub strike: bool,
+    pub bg: Option<Color32>,
+}
+
+/// Parse a CSS declaration list such as `color:#e05f5f;font-size:18px`.
+pub fn parse_css_style(css: &str) -> SpanStyle {
+    let mut st = SpanStyle::default();
+    for decl in css.split(';') {
+        let Some((key, value)) = decl.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        match key.as_str() {
+            "color" => st.color = parse_css_color(value),
+            "background" | "background-color" => st.bg = parse_css_color(value),
+            "font-size" => st.size = parse_css_size(value),
+            "font-weight" => {
+                st.bold = value.eq_ignore_ascii_case("bold")
+                    || value.parse::<u32>().map(|n| n >= 600).unwrap_or(false)
+            }
+            "font-style" => st.italic = value.eq_ignore_ascii_case("italic"),
+            "font-family" => {
+                st.mono = value.to_ascii_lowercase().contains("mono")
+                    || value.to_ascii_lowercase().contains("courier")
+            }
+            "text-decoration" => st.strike = value.to_ascii_lowercase().contains("line-through"),
+            _ => {}
+        }
+    }
+    st
+}
+
+/// `#rrggbb`, `#rgb` or a handful of CSS colour names.
+pub fn parse_css_color(v: &str) -> Option<Color32> {
+    let v = v.trim();
+    if let Some(hex) = v.strip_prefix('#') {
+        let parse = |s: &str| u8::from_str_radix(s, 16).ok();
+        return match hex.len() {
+            3 => {
+                let mut it = hex.chars();
+                let r = it.next()?;
+                let g = it.next()?;
+                let b = it.next()?;
+                let d = |c: char| u8::from_str_radix(&format!("{c}{c}"), 16).ok();
+                Some(Color32::from_rgb(d(r)?, d(g)?, d(b)?))
+            }
+            6 => Some(Color32::from_rgb(
+                parse(&hex[0..2])?,
+                parse(&hex[2..4])?,
+                parse(&hex[4..6])?,
+            )),
+            _ => None,
+        };
+    }
+    let rgb = match v.to_ascii_lowercase().as_str() {
+        "red" => (0xe0, 0x5f, 0x5f),
+        "orange" => (0xe0, 0x8c, 0x4f),
+        "yellow" => (0xd8, 0xc0, 0x4f),
+        "green" => (0x7d, 0xdc, 0x8a),
+        "teal" => (0x5f, 0xc8, 0xc8),
+        "blue" => (0x6a, 0xa8, 0xf0),
+        "purple" => (0xa8, 0x95, 0xff),
+        "pink" => (0xd0, 0x8f, 0xc0),
+        "gray" | "grey" => (0x9a, 0x9a, 0x9a),
+        _ => return None,
+    };
+    Some(Color32::from_rgb(rgb.0, rgb.1, rgb.2))
+}
+
+fn parse_css_size(v: &str) -> Option<f32> {
+    let v = v.trim().to_ascii_lowercase();
+    for suffix in ["px", "pt", "em", "rem"] {
+        if let Some(num) = v.strip_suffix(suffix) {
+            let n: f32 = num.trim().parse().ok()?;
+            return Some(match suffix {
+                "px" => n * 0.75,
+                "pt" => n,
+                "em" | "rem" => 15.0 * n,
+                _ => n,
+            });
+        }
+    }
+    v.parse().ok()
+}
+
+/// Read `name="value"` (or `name='value'`) out of a raw tag body.
+fn attr_value(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(pos) = lower[from..].find(name) {
+        let start = from + pos;
+        let after = start + name.len();
+        if !lower[after..].starts_with('=') {
+            from = after;
+            continue;
+        }
+        let rest = tag[after + 1..].trim_start();
+        let quote = rest.chars().next()?;
+        if quote == '"' || quote == '\'' {
+            let body = &rest[1..];
+            let end = body.find(quote)?;
+            return Some(body[..end].to_string());
+        }
+        return None;
+    }
+    None
+}
+
+/// Merge a stack of span styles (outermost first).
+fn merge_spans(stack: &[SpanStyle]) -> SpanStyle {
+    let mut out = SpanStyle::default();
+    for st in stack {
+        if st.color.is_some() {
+            out.color = st.color;
+        }
+        if st.bg.is_some() {
+            out.bg = st.bg;
+        }
+        if st.size.is_some() {
+            out.size = st.size;
+        }
+        out.mono |= st.mono;
+        out.bold |= st.bold;
+        out.italic |= st.italic;
+        out.strike |= st.strike;
+    }
+    out
+}
+
+/// Name of a raw tag body: `span style="…"` → `span`.
+fn tag_name(raw: &str) -> String {
+    raw.trim_start_matches('/')
+        .split(|c: char| c.is_whitespace() || c == '/')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
 /// Parse a single line into styled inline runs.
 fn parse_inline(line: &str) -> Vec<Inline> {
     let mut out: Vec<Inline> = Vec::new();
@@ -236,16 +388,22 @@ fn parse_inline(line: &str) -> Vec<Inline> {
     let mut italic = false;
     let mut strike = false;
     let mut code = false;
+    let mut spans: Vec<SpanStyle> = Vec::new();
 
     macro_rules! flush {
         () => {
             if !buf.is_empty() {
+                let sp = merge_spans(&spans);
                 out.push(Inline::Text {
                     text: std::mem::take(&mut buf),
-                    bold,
-                    italic,
-                    strike,
+                    bold: bold || sp.bold,
+                    italic: italic || sp.italic,
+                    strike: strike || sp.strike,
                     code,
+                    color: sp.color,
+                    size: sp.size,
+                    mono: sp.mono,
+                    bg: sp.bg,
                 });
             }
         };
@@ -280,20 +438,79 @@ fn parse_inline(line: &str) -> Vec<Inline> {
                 continue;
             }
         }
-        // Inline HTML: drop tags (keep <br> as a line break).
+        // Inline HTML: rich text spans are honoured, other tags are dropped
+        // (and <br> becomes a line break).
         if c == '<' {
             if let Some(close) = chars[i..].iter().position(|&x| x == '>') {
-                let tag: String = chars[i + 1..i + close].iter().collect();
-                let lname = tag.trim_start_matches('/').to_ascii_lowercase();
+                let raw: String = chars[i + 1..i + close].iter().collect();
+                let closing = raw.trim_start().starts_with('/');
+                let name = tag_name(&raw);
                 flush!();
-                if lname == "br" || lname == "br/" {
-                    out.push(Inline::Text {
-                        text: "\n".into(),
-                        bold,
-                        italic,
-                        strike,
-                        code,
-                    });
+                match name.as_str() {
+                    "br" | "" => {
+                        if name == "br" {
+                            out.push(Inline::Text {
+                                text: "\n".into(),
+                                bold,
+                                italic,
+                                strike,
+                                code,
+                                color: None,
+                                size: None,
+                                mono: false,
+                                bg: None,
+                            });
+                        }
+                    }
+                    "b" | "strong" => {
+                        if closing {
+                            spans.pop();
+                        } else {
+                            spans.push(SpanStyle {
+                                bold: true,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    "i" | "em" => {
+                        if closing {
+                            spans.pop();
+                        } else {
+                            spans.push(SpanStyle {
+                                italic: true,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    "s" | "del" | "strike" => {
+                        if closing {
+                            spans.pop();
+                        } else {
+                            spans.push(SpanStyle {
+                                strike: true,
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    "mark" => {
+                        if closing {
+                            spans.pop();
+                        } else {
+                            spans.push(SpanStyle {
+                                bg: Some(crate::theme::HIGHLIGHT),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    "span" => {
+                        if closing {
+                            spans.pop();
+                        } else {
+                            let css = attr_value(&raw, "style").unwrap_or_default();
+                            spans.push(parse_css_style(&css));
+                        }
+                    }
+                    _ => {}
                 }
                 i = i + close + 1;
                 continue;
@@ -775,6 +992,10 @@ pub fn render(
                 italic,
                 strike,
                 code,
+                color,
+                size,
+                mono,
+                bg,
             }) = segs.into_iter().next()
             {
                 let mut rt = RichText::new(text).size(base_size);
@@ -791,6 +1012,18 @@ pub fn render(
                     rt = rt
                         .monospace()
                         .background_color(ui.visuals().extreme_bg_color);
+                }
+                if let Some(c) = color {
+                    rt = rt.color(c);
+                }
+                if let Some(sz) = size {
+                    rt = rt.size(sz);
+                }
+                if mono {
+                    rt = rt.monospace();
+                }
+                if let Some(b) = bg {
+                    rt = rt.background_color(b);
                 }
                 ui.add(egui::Label::new(rt).wrap(true));
             }
@@ -1061,14 +1294,27 @@ fn render_segments_bold(
     for seg in parse_inline(line) {
         match seg {
             Inline::Text {
-                text, code, strike, ..
+                text,
+                code,
+                strike,
+                color,
+                size,
+                mono,
+                bg,
+                ..
             } => {
-                let mut rt = RichText::new(text).size(base_size).strong();
-                if code {
+                let mut rt = RichText::new(text).size(size.unwrap_or(base_size)).strong();
+                if code || mono {
                     rt = rt.monospace();
                 }
                 if strike {
                     rt = rt.strikethrough();
+                }
+                if let Some(c) = color {
+                    rt = rt.color(c);
+                }
+                if let Some(b) = bg {
+                    rt = rt.background_color(b);
                 }
                 ui.label(rt);
             }
@@ -1103,8 +1349,12 @@ fn render_one(
             italic,
             strike,
             code,
+            color,
+            size,
+            mono,
+            bg,
         } => {
-            let mut rt = RichText::new(text).size(base_size);
+            let mut rt = RichText::new(text).size(size.unwrap_or(base_size));
             if bold {
                 rt = rt.strong();
             }
@@ -1119,6 +1369,15 @@ fn render_one(
                     .monospace()
                     .color(Color32::from_rgb(0xcf, 0xd6, 0xe6))
                     .background_color(crate::theme::CODE_BG);
+            }
+            if mono {
+                rt = rt.monospace();
+            }
+            if let Some(c) = color {
+                rt = rt.color(c);
+            }
+            if let Some(b) = bg {
+                rt = rt.background_color(b);
             }
             ui.label(rt);
         }
@@ -1224,6 +1483,11 @@ struct InlineFlags {
     strike: bool,
     code: bool,
     highlight: bool,
+    /// Rich-text overrides from an inline `<span style="…">`.
+    color: Option<Color32>,
+    size: Option<f32>,
+    mono: bool,
+    bg: Option<Color32>,
 }
 
 /// Build a [`egui::text::LayoutJob`] for the editor that renders markdown with
@@ -1506,6 +1770,19 @@ fn style_for(
         out.color = crate::theme::LINK;
         out.underline = egui::Stroke::new(1.0_f32, crate::theme::LINK);
     }
+    // Explicit rich-text overrides win over the markdown defaults.
+    if flags.mono {
+        out.font_id = egui::FontId::monospace(out.font_id.size);
+    }
+    if let Some(size) = flags.size {
+        out.font_id.size = size;
+    }
+    if let Some(c) = flags.color {
+        out.color = c;
+    }
+    if let Some(bg) = flags.bg {
+        out.background = bg;
+    }
     out
 }
 
@@ -1594,6 +1871,8 @@ fn emit_inline(
     let mut plain = 0usize;
     // Closing marker positions that were revealed together with their opening.
     let mut revealed: Vec<(usize, Marker)> = Vec::new();
+    // Saved flag states while inside `<span>` / `<b>` / `<i>` / `<mark>` tags.
+    let mut span_stack: Vec<InlineFlags> = Vec::new();
 
     macro_rules! flush {
         ($end:expr) => {
@@ -1621,6 +1900,68 @@ fn emit_inline(
 
     while i < s.len() {
         let rest = &s[i..];
+        // Rich-text tags: hidden in the editor, but their styles applied.
+        if conceal && rest.starts_with('<') {
+            if let Some(close) = rest.find('>') {
+                let raw = &rest[1..close];
+                let closing = raw.trim_start().starts_with('/');
+                let name = tag_name(raw);
+                let handled = matches!(
+                    name.as_str(),
+                    "span" | "b" | "strong" | "i" | "em" | "s" | "del" | "strike" | "mark" | "br"
+                );
+                if handled {
+                    flush!(i);
+                    job.append(&s[i..i + close + 1], 0.0, hidden_format());
+                    match name.as_str() {
+                        "br" => {
+                            job.append("\n", 0.0, base_format(base.font_id.size, base.color));
+                        }
+                        "span" if !closing => {
+                            span_stack.push(flags);
+                            let css = attr_value(raw, "style").unwrap_or_default();
+                            let st = parse_css_style(&css);
+                            if st.color.is_some() {
+                                flags.color = st.color;
+                            }
+                            if st.bg.is_some() {
+                                flags.bg = st.bg;
+                            }
+                            if st.size.is_some() {
+                                flags.size = st.size;
+                            }
+                            flags.mono |= st.mono;
+                            flags.bold |= st.bold;
+                            flags.italic |= st.italic;
+                            flags.strike |= st.strike;
+                        }
+                        "span" => {
+                            if let Some(prev) = span_stack.pop() {
+                                flags = prev;
+                            }
+                        }
+                        _ if closing => {
+                            if let Some(prev) = span_stack.pop() {
+                                flags = prev;
+                            }
+                        }
+                        _ => {
+                            span_stack.push(flags);
+                            match name.as_str() {
+                                "b" | "strong" => flags.bold = true,
+                                "i" | "em" => flags.italic = true,
+                                "s" | "del" | "strike" => flags.strike = true,
+                                "mark" => flags.bg = Some(crate::theme::HIGHLIGHT),
+                                _ => {}
+                            }
+                        }
+                    }
+                    i += close + 1;
+                    plain = i;
+                    continue;
+                }
+            }
+        }
         if conceal {
             // A closing marker whose opener we revealed: show it literally.
             if let Some(pos) = revealed.iter().position(|(at, _)| *at == i) {
@@ -1816,6 +2157,7 @@ mod tests {
                     italic,
                     strike,
                     code,
+                    ..
                 } => Some((text, bold, italic, strike, code)),
                 _ => None,
             })
@@ -1824,6 +2166,41 @@ mod tests {
         assert!(texts.iter().any(|(t, _, i, _, _)| t == "d" && *i));
         assert!(texts.iter().any(|(t, _, _, _, c)| t == "e" && *c));
         assert!(texts.iter().any(|(t, _, _, s, _)| t == "f" && *s));
+    }
+
+    #[test]
+    fn parses_rich_text_spans() {
+        let segs = parse_inline(
+            "a <span style=\"color:#e05f5f;font-size:20px;font-weight:bold\">hot</span> b",
+        );
+        let hot = segs
+            .into_iter()
+            .find_map(|s| match s {
+                Inline::Text {
+                    text,
+                    color,
+                    size,
+                    bold,
+                    ..
+                } if text == "hot" => Some((color, size, bold)),
+                _ => None,
+            })
+            .expect("span text");
+        assert_eq!(hot.0, Some(Color32::from_rgb(0xe0, 0x5f, 0x5f)));
+        assert!((hot.1.unwrap() - 15.0).abs() < 0.01, "20px → 15pt");
+        assert!(hot.2);
+    }
+
+    #[test]
+    fn parses_css_declarations() {
+        let st = parse_css_style(
+            "color:#0a0; background-color:#f2f07e; font-size:12pt; text-decoration:line-through",
+        );
+        assert_eq!(st.color, Some(Color32::from_rgb(0x00, 0xaa, 0x00)));
+        assert_eq!(st.bg, Some(Color32::from_rgb(0xf2, 0xf0, 0x7e)));
+        assert!((st.size.unwrap() - 12.0).abs() < 0.01);
+        assert!(st.strike);
+        assert!(parse_css_color("nope").is_none());
     }
 
     #[test]

@@ -351,6 +351,10 @@ const TR: &[(&str, &str)] = &[
         "Notların için bir markdown kasası",
     ),
     ("Open a vault", "Bir kasa aç"),
+    ("Text colour", "Metin rengi"),
+    ("Highlight colour", "Vurgu rengi"),
+    ("Select some text first", "Önce bir metin seç"),
+    ("Click in the note first", "Önce nota tıkla"),
     ("This vault still uses the old encrypted format", "Bu kasa hâlâ eski şifreli biçimi kullanıyor"),
     (
         "Encryption has been removed. Enter the old master password once to convert every note and attachment to a plain file. Nothing is deleted.",

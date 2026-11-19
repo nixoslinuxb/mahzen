@@ -226,6 +226,21 @@ fn canvas_color(code: &str) -> Option<Color32> {
 
 const CANVAS_COLORS: [&str; 6] = ["1", "2", "3", "4", "5", "6"];
 
+/// Text/highlight colours offered by the formatting bar.
+const RICH_COLORS: &[(&str, &str)] = &[
+    ("Red", "#e05f5f"),
+    ("Orange", "#e08c4f"),
+    ("Yellow", "#d8c04f"),
+    ("Green", "#7ddc8a"),
+    ("Teal", "#5fc8c8"),
+    ("Blue", "#6aa8f0"),
+    ("Purple", "#a895ff"),
+    ("Pink", "#d08fc0"),
+    ("Grey", "#9a9a9a"),
+    ("Black", "#1f2329"),
+    ("White", "#f0f0f0"),
+];
+
 /// Graph colour-group palette.
 const GROUP_COLORS: [Color32; 8] = [
     Color32::from_rgb(0x8a, 0x5c, 0xf5),
@@ -7200,6 +7215,397 @@ impl EncryptedNoteApp {
         ctx.memory_mut(|m| m.request_focus(id));
     }
 
+    /// Run `f` on the current editor selection (or the whole line when the
+    /// caret is empty). `f` returns the new document and the new char selection.
+    fn with_selection<F>(&mut self, ctx: &egui::Context, f: F)
+    where
+        F: FnOnce(&str, (usize, usize)) -> Option<(String, (usize, usize))>,
+    {
+        let idx = self.active;
+        let Some(tab_id) = self.tabs.get(idx).map(|t| t.id) else {
+            return;
+        };
+        let id = egui::Id::new(("editor", tab_id));
+        let Some((a, b)) = Self::editor_state_range(ctx, id) else {
+            self.status = crate::tr!("Click in the note first").into();
+            return;
+        };
+        let text = self.tabs[idx].text.clone();
+        let chars: Vec<char> = text.chars().collect();
+        let lo = a.min(b).min(chars.len());
+        let hi = a.max(b).min(chars.len());
+        let byte_of = |ci: usize| -> usize { chars.iter().take(ci).map(|c| c.len_utf8()).sum() };
+        // With an empty selection, act on the caret's line.
+        let (sel_start, sel_end) = if lo == hi {
+            let line_start = chars[..lo]
+                .iter()
+                .rposition(|c| *c == '\n')
+                .map_or(0, |p| p + 1);
+            let line_end = chars[lo..]
+                .iter()
+                .position(|c| *c == '\n')
+                .map_or(chars.len(), |p| lo + p);
+            (byte_of(line_start), byte_of(line_end))
+        } else {
+            (byte_of(lo), byte_of(hi))
+        };
+        let selected = text[sel_start..sel_end].to_string();
+        let Some((new_text, (nlo, nhi))) = f(&selected, (lo, hi)) else {
+            return;
+        };
+        if new_text == text {
+            return;
+        }
+        let tab = &mut self.tabs[idx];
+        tab.undo.push(text);
+        if tab.undo.len() > 500 {
+            tab.undo.remove(0);
+        }
+        tab.redo.clear();
+        tab.text = new_text;
+        Self::store_editor_range(ctx, id, (nlo, nhi));
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+
+    /// Wrap the selection in an inline HTML tag pair (bold, italic, span, …).
+    fn apply_inline_tag(&mut self, ctx: &egui::Context, open: String, close: String) {
+        let open_len = open.chars().count();
+        self.with_selection(ctx, move |sel, (lo, hi)| {
+            if sel.is_empty() {
+                return None;
+            }
+            let mut out = String::new();
+            out.push_str(&open);
+            out.push_str(sel);
+            out.push_str(&close);
+            let inner_len = sel.chars().count();
+            // Selection covers the wrapped text (or the caret stays after it).
+            let (a, b) = if lo == hi {
+                let at = lo + open_len + inner_len;
+                (at, at)
+            } else {
+                (lo + open_len, lo + open_len + inner_len)
+            };
+            Some((out, (a, b)))
+        });
+    }
+
+    /// Apply a rich-text CSS declaration list to the selection.
+    fn apply_span_style(&mut self, ctx: &egui::Context, css: &str) {
+        if !self.has_selection(ctx) {
+            self.status = crate::tr!("Select some text first").into();
+            return;
+        }
+        self.apply_inline_tag(
+            ctx,
+            format!("<span style=\"{css}\">"),
+            "</span>".to_string(),
+        );
+    }
+
+    fn has_selection(&self, ctx: &egui::Context) -> bool {
+        let Some(tab_id) = self.tabs.get(self.active).map(|t| t.id) else {
+            return false;
+        };
+        Self::editor_state_range(ctx, egui::Id::new(("editor", tab_id)))
+            .map(|(a, b)| a != b)
+            .unwrap_or(false)
+    }
+
+    /// Toggle a line prefix (heading, list, quote) on the selected lines.
+    fn apply_line_prefix(&mut self, ctx: &egui::Context, prefix: &str, group: &[&str]) {
+        let prefix = prefix.to_string();
+        let group: Vec<String> = group.iter().map(|s| s.to_string()).collect();
+        let plen = prefix.chars().count();
+        self.with_selection(ctx, move |sel, (lo, _)| {
+            let lines: Vec<&str> = sel.split('\n').collect();
+            let already = lines.iter().all(|l| {
+                let t = l.trim_start();
+                t.starts_with(prefix.trim_end())
+                    || group.iter().any(|g| t.starts_with(g.trim_end()))
+            });
+            let new_sel = lines
+                .iter()
+                .map(|l| {
+                    let stripped = if let Some(g) = group
+                        .iter()
+                        .find(|g| l.trim_start().starts_with(g.trim_end()))
+                    {
+                        let lead = l.len() - l.trim_start().len();
+                        format!(
+                            "{}{}",
+                            &l[..lead],
+                            l.trim_start().trim_start_matches(g.trim_end()).trim_start()
+                        )
+                    } else {
+                        l.to_string()
+                    };
+                    if already {
+                        stripped
+                    } else {
+                        format!("{prefix}{stripped}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let delta = if already { 0usize } else { plen * lines.len() };
+            Some((new_sel, (lo, lo + delta)))
+        });
+    }
+
+    /// Strip inline HTML formatting from the selection.
+    fn clear_formatting(&mut self, ctx: &egui::Context) {
+        self.with_selection(ctx, |sel, (lo, _)| {
+            let mut out = String::new();
+            let mut rest = sel;
+            while let Some(pos) = rest.find('<') {
+                out.push_str(&rest[..pos]);
+                let Some(end) = rest[pos..].find('>') else {
+                    rest = &rest[pos..];
+                    break;
+                };
+                rest = &rest[pos + end + 1..];
+            }
+            out.push_str(rest);
+            let len = out.chars().count();
+            Some((out, (lo, lo + len)))
+        });
+    }
+
+    /// The Trilium-style formatting bar shown above the editor.
+    fn format_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut pending_tag: Option<(String, String)> = None;
+        let mut pending_css: Option<String> = None;
+        let mut pending_prefix: Option<(&'static str, &'static [&'static str])> = None;
+        let mut clear = false;
+        let _has_sel = self.has_selection(ctx);
+
+        egui::Frame::none()
+            .fill(theme::PANEL_DEEP)
+            .inner_margin(egui::Margin::symmetric(6.0, 3.0))
+            .show(ui, |ui| {
+                egui::ScrollArea::horizontal()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+
+                            // Paragraph style.
+                            egui::ComboBox::from_id_source("md-block")
+                                .width(96.0)
+                                .selected_text("¶ Text")
+                                .show_ui(ui, |ui| {
+                                    for (label, prefix, group) in [
+                                        (
+                                            "¶ Text",
+                                            "",
+                                            &[
+                                                "# ", "## ", "### ", "#### ", "##### ", "###### ",
+                                                "- ", "* ", "+ ", "1. ", "> ", "- [ ] ",
+                                            ][..],
+                                        ),
+                                        (
+                                            "H1",
+                                            "# ",
+                                            &["## ", "### ", "#### ", "##### ", "###### "][..],
+                                        ),
+                                        (
+                                            "H2",
+                                            "## ",
+                                            &["# ", "### ", "#### ", "##### ", "###### "][..],
+                                        ),
+                                        (
+                                            "H3",
+                                            "### ",
+                                            &["# ", "## ", "#### ", "##### ", "###### "][..],
+                                        ),
+                                        ("• Bullet", "- ", &["* ", "+ ", "- [ ] "][..]),
+                                        ("1. Numbered", "1. ", &["- ", "* ", "+ ", "- [ ] "][..]),
+                                        ("☐ Checkbox", "- [ ] ", &["- ", "* ", "+ ", "1. "][..]),
+                                        ("❝ Quote", "> ", &["# ", "- ", "1. "][..]),
+                                    ] {
+                                        if ui.selectable_label(false, label).clicked() {
+                                            pending_prefix = Some((prefix, group));
+                                        }
+                                    }
+                                });
+
+                            // Font family.
+                            egui::ComboBox::from_id_source("md-font")
+                                .width(78.0)
+                                .selected_text("Aa Sans")
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(false, "Aa Sans").clicked() {
+                                        pending_css = Some("font-family:sans-serif".into());
+                                    }
+                                    if ui.selectable_label(false, "Aa Mono").clicked() {
+                                        pending_css = Some("font-family:monospace".into());
+                                    }
+                                });
+
+                            // Font size.
+                            egui::ComboBox::from_id_source("md-size")
+                                .width(62.0)
+                                .selected_text(format!("{:.0} pt", self.config.font_size))
+                                .show_ui(ui, |ui| {
+                                    for size in [12u32, 14, 16, 18, 20, 24, 28, 32] {
+                                        if ui
+                                            .selectable_label(false, format!("{size} pt"))
+                                            .clicked()
+                                        {
+                                            pending_css = Some(format!("font-size:{size}px"));
+                                        }
+                                    }
+                                });
+
+                            ui.separator();
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("B").strong())
+                                        .min_size(egui::vec2(22.0, 22.0)),
+                                )
+                                .on_hover_text("Bold (Ctrl+B)")
+                                .clicked()
+                            {
+                                pending_tag = Some(("**".into(), "**".into()));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("I").italics())
+                                        .min_size(egui::vec2(22.0, 22.0)),
+                                )
+                                .on_hover_text("Italic (Ctrl+I)")
+                                .clicked()
+                            {
+                                pending_tag = Some(("*".into(), "*".into()));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("S").strikethrough())
+                                        .min_size(egui::vec2(22.0, 22.0)),
+                                )
+                                .on_hover_text("Strikethrough")
+                                .clicked()
+                            {
+                                pending_tag = Some(("~~".into(), "~~".into()));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("</>").monospace())
+                                        .min_size(egui::vec2(28.0, 22.0)),
+                                )
+                                .on_hover_text("Inline code")
+                                .clicked()
+                            {
+                                pending_tag = Some(("`".into(), "`".into()));
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("H")
+                                            .color(theme::HIGHLIGHT_TEXT)
+                                            .background_color(theme::HIGHLIGHT),
+                                    )
+                                    .min_size(egui::vec2(22.0, 22.0)),
+                                )
+                                .on_hover_text("Highlight")
+                                .clicked()
+                            {
+                                pending_tag = Some(("==".into(), "==".into()));
+                            }
+
+                            // Text colour.
+                            ui.menu_button(
+                                RichText::new("A").strong().color(theme::DANGER),
+                                |ui| {
+                                    ui.label(RichText::new(crate::tr!("Text colour")).small());
+                                    ui.horizontal_wrapped(|ui| {
+                                        for (name, hex) in RICH_COLORS {
+                                            if ui
+                                                .add(
+                                                    egui::Button::new("  ")
+                                                        .fill(
+                                                            markdown::parse_css_color(hex)
+                                                                .unwrap_or(theme::TEXT),
+                                                        )
+                                                        .min_size(egui::vec2(20.0, 20.0)),
+                                                )
+                                                .on_hover_text(*name)
+                                                .clicked()
+                                            {
+                                                pending_css = Some(format!("color:{hex}"));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                },
+                            )
+                            .response
+                            .on_hover_text("Text colour");
+
+                            // Highlight colour.
+                            ui.menu_button(
+                                RichText::new("A")
+                                    .color(theme::HIGHLIGHT_TEXT)
+                                    .background_color(theme::HIGHLIGHT),
+                                |ui| {
+                                    ui.label(RichText::new(crate::tr!("Highlight colour")).small());
+                                    ui.horizontal_wrapped(|ui| {
+                                        for (name, hex) in RICH_COLORS {
+                                            if ui
+                                                .add(
+                                                    egui::Button::new("  ")
+                                                        .fill(
+                                                            markdown::parse_css_color(hex)
+                                                                .unwrap_or(theme::TEXT),
+                                                        )
+                                                        .min_size(egui::vec2(20.0, 20.0)),
+                                                )
+                                                .on_hover_text(*name)
+                                                .clicked()
+                                            {
+                                                pending_css =
+                                                    Some(format!("background-color:{hex}"));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                },
+                            )
+                            .response
+                            .on_hover_text("Highlight colour");
+
+                            if ui
+                                .add(
+                                    egui::Button::new(RichText::new("Tₓ").strong())
+                                        .min_size(egui::vec2(26.0, 22.0)),
+                                )
+                                .on_hover_text("Clear formatting")
+                                .clicked()
+                            {
+                                clear = true;
+                            }
+                        });
+                    });
+            });
+
+        if let Some((prefix, group)) = pending_prefix {
+            self.apply_line_prefix(ctx, prefix, group);
+        }
+        if let Some(css) = pending_css {
+            self.apply_span_style(ctx, &css);
+        }
+        if let Some((open, close)) = pending_tag {
+            if !open.is_empty() {
+                self.apply_inline_tag(ctx, open, close);
+            }
+        }
+        if clear {
+            self.clear_formatting(ctx);
+        }
+        ui.add_space(2.0);
+    }
+
     fn editor_ui(&mut self, ui: &mut egui::Ui, idx: usize, pane: u8) {
         if self.config.vim {
             self.vim_editor_ui(ui, idx);
@@ -7284,6 +7690,10 @@ impl EncryptedNoteApp {
         let mut rect_after = egui::Rect::NOTHING;
         let mut wrap_after = 0.0f32;
         let note_title = self.tabs[idx].title.clone();
+        if pane == 0 && !self.config.vim {
+            let ctx = ui.ctx().clone();
+            self.format_bar(ui, &ctx);
+        }
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .id_source(("editor_scroll", tab_id, pane))
@@ -9351,6 +9761,16 @@ impl EncryptedNoteApp {
         if ctx.input_mut(|i| i.consume_shortcut(&open)) {
             self.open_picker();
         }
+        // Rich-text shortcuts: Ctrl+B bold, Ctrl+I italic.
+        let bold_sc = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::B);
+        if ctx.input_mut(|i| i.consume_shortcut(&bold_sc)) {
+            self.apply_inline_tag(ctx, "**".into(), "**".into());
+        }
+        let italic_sc = egui::KeyboardShortcut::new(Modifiers::COMMAND, Key::I);
+        if ctx.input_mut(|i| i.consume_shortcut(&italic_sc)) {
+            self.apply_inline_tag(ctx, "*".into(), "*".into());
+        }
+
         // Ctrl+Shift+R reloads the active note from disk.
         let reload = egui::KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::R);
         if ctx.input_mut(|i| i.consume_shortcut(&reload)) {

@@ -82,6 +82,15 @@ On Arch, make sure a Vulkan driver is installed for the GPU in use (e.g.
   line shows its raw markup in full rather than hiding the non-caret spans, so it is a
   *line-accurate* hybrid, not character-accurate WYSIWYG. True WYSIWYG needs a custom
   rich-text engine (not built).
+- **Rich-text formatting bar** — a Trilium-style toolbar sits above the editor
+  with a paragraph-style menu (text, H1–H3, bullets, numbered, checkbox,
+  quote), a **font** menu (sans/mono), a **font size** menu (12–32 pt), bold,
+  italic, strikethrough, inline code, highlight, **text colour** and
+  **highlight colour** palettes, and *clear formatting*. It applies to the
+  selected text (or the caret's line), so **each word can have its own size,
+  font and colour**. Formatting is stored as standard Markdown plus inline
+  `<span style="…">` HTML, so the files stay `.md` and Obsidian renders them
+  identically. `Ctrl+B` / `Ctrl+I` are shortcuts for bold and italic.
 - **Concealed markdown (WYSIWYG editing)** — the default editor hides inline
   markup (`**`, `*`, `~~`, backticks, `#` heading markers, `> `, wikilink
   brackets and link URLs) and styles the content instead: headings are enlarged,
