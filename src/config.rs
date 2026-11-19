@@ -77,9 +77,6 @@ pub struct Config {
     /// Show tabs as vertical, letter-stacked strips (sliding-panes look).
     #[serde(default = "default_true")]
     pub vertical_tabs: bool,
-    /// Show the mini graph at the bottom of the left sidebar.
-    #[serde(default = "default_true")]
-    pub sidebar_graph: bool,
     /// Sort the tag pane by note count instead of name.
     #[serde(default)]
     pub tag_sort_count: bool,
@@ -169,7 +166,6 @@ impl Default for Config {
             bookmarks: Vec::new(),
             linked_pane: false,
             vertical_tabs: true,
-            sidebar_graph: true,
             tag_sort_count: false,
             watch_external: true,
             stacked_tabs: false,

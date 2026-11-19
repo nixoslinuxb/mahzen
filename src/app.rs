@@ -5156,23 +5156,6 @@ impl EncryptedNoteApp {
                     });
                     ui.separator();
 
-                    // Mini graph docked at the bottom of the sidebar.
-                    if self.config.sidebar_graph && ui.available_height() > 320.0 {
-                        let max_h = (ui.available_height() * 0.55).clamp(120.0, 420.0);
-                        egui::TopBottomPanel::bottom("sidebar_graph")
-                            .resizable(true)
-                            .default_height((ui.available_height() * 0.42).clamp(120.0, max_h))
-                            .height_range(90.0..=max_h)
-                            .frame(
-                                egui::Frame::none()
-                                    .fill(theme::PANEL)
-                                    .inner_margin(egui::Margin::symmetric(2.0, 6.0)),
-                            )
-                            .show_inside(ui, |ui| {
-                                self.sidebar_graph_ui(ui);
-                            });
-                    }
-
                     let tree = self.tree.clone();
                     let selected = self.tabs.get(self.active).map(|t| t.path.clone());
                     let titles = self.titles.clone();
@@ -6770,77 +6753,6 @@ impl EncryptedNoteApp {
             self.close_tab(i);
         }
         true
-    }
-
-    /// A compact, read-only graph docked at the bottom of the left sidebar.
-    fn sidebar_graph_ui(&mut self, ui: &mut egui::Ui) {
-        let nodes = self.graph_nodes.clone();
-        let pos = self.graph_pos.clone();
-        let edges = self.graph_edges.clone();
-        if nodes.is_empty() {
-            ui.add_space(10.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    RichText::new(crate::tr!("No notes to graph"))
-                        .size(10.0)
-                        .color(theme::TEXT_MUTED),
-                );
-            });
-            return;
-        }
-        theme::section_label(ui, "Graph");
-        let rect = ui.available_rect_before_wrap();
-        if rect.width() < 40.0 || rect.height() < 40.0 {
-            return;
-        }
-        ui.allocate_rect(rect, egui::Sense::hover());
-        let painter = ui.painter_at(rect);
-        let center = rect.center();
-        let scale = rect.width().min(rect.height()) * 0.44;
-        let active = self.tabs.get(self.active).map(|t| t.path.clone());
-        let mut clicked: Option<PathBuf> = None;
-        // Edges.
-        for (a, b) in &edges {
-            let (Some(pa), Some(pb)) = (pos.get(*a), pos.get(*b)) else {
-                continue;
-            };
-            painter.line_segment(
-                [
-                    center + egui::vec2(pa.0 * scale, pa.1 * scale),
-                    center + egui::vec2(pb.0 * scale, pb.1 * scale),
-                ],
-                egui::Stroke::new(0.8_f32, theme::TEXT_MUTED.gamma_multiply(0.35)),
-            );
-        }
-        // Nodes.
-        let palette = [theme::GOLD, theme::ACCENT_2, theme::ACCENT, theme::SUCCESS];
-        for (i, path) in nodes.iter().enumerate() {
-            let Some(p) = pos.get(i) else { continue };
-            let point = center + egui::vec2(p.0 * scale, p.1 * scale);
-            if !rect.contains(point) {
-                continue;
-            }
-            let is_active = active.as_deref() == Some(path.as_path());
-            let color = if is_active {
-                theme::TEXT
-            } else {
-                palette[i % palette.len()]
-            };
-            let r = if is_active { 3.6 } else { 2.6 };
-            let hit = egui::Rect::from_center_size(point, egui::vec2(12.0, 12.0));
-            let resp = ui.interact(hit, ui.id().with(("minigraph", i)), egui::Sense::click());
-            painter.circle_filled(
-                point,
-                r,
-                color.gamma_multiply(if resp.hovered() { 1.0 } else { 0.85 }),
-            );
-            if resp.clicked() {
-                clicked = Some(path.clone());
-            }
-        }
-        if let Some(p) = clicked {
-            self.pending_open = Some(p);
-        }
     }
 
     /// Render the force-directed graph view of notes and their links, with
@@ -8866,10 +8778,6 @@ impl EncryptedNoteApp {
                         ui.checkbox(
                             &mut self.config.vertical_tabs,
                             crate::tr!("Vertical tab strips (sliding panes)"),
-                        );
-                        ui.checkbox(
-                            &mut self.config.sidebar_graph,
-                            crate::tr!("Mini graph in the sidebar"),
                         );
                         ui.checkbox(
                             &mut self.config.watch_external,

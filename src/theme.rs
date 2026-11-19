@@ -33,7 +33,6 @@ pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x9a, 0x9d, 0xae);
 pub const LINK: Color32 = Color32::from_rgb(0x7f, 0xa6, 0xe8);
 pub const BORDER: Color32 = Color32::from_rgb(0x3a, 0x3b, 0x47);
 pub const DANGER: Color32 = Color32::from_rgb(0xd9, 0x6a, 0x6a);
-pub const SUCCESS: Color32 = Color32::from_rgb(0x7b, 0xd9, 0xa5);
 /// LYT's signature gold used for bullets, the active pane edge and list markers.
 pub const GOLD: Color32 = Color32::from_rgb(0xd8, 0xc6, 0x5a);
 /// Warm orange for unresolved links.

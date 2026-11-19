@@ -383,8 +383,6 @@ Details borrowed from that theme:
   Settings).
 - **Selected file preview** — the selected note in the explorer expands into a
   rounded block showing its opening lines.
-- **Mini graph in the sidebar** — a read-only force-directed graph docked at the
-  bottom of the left panel; click a node to open that note.
 - **Tag pane** — a `#` header with a sort-by-count toggle, hierarchical tags
   with chevrons and right-aligned counts.
 - **Coloured link states** — resolved wikilinks are periwinkle, unresolved ones
@@ -398,8 +396,7 @@ Details borrowed from that theme:
     widening one pane can never draw it over the other; the divider keeps a
     minimum width for both sides and its share is remembered in
     `config.json` (`split_frac`),
-  - side-panel width limits and the sidebar-graph height range scale with the
-    window, and the mini graph is hidden on short windows,
+  - side-panel width limits scale with the window,
   - the ribbon and right-panel action rows wrap instead of overflowing,
   - leaving fullscreen restores the last windowed size instead of a
     zero/tiny window, and the saved startup window mode is applied once the

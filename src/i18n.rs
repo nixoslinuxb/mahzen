@@ -338,7 +338,6 @@ const TR: &[(&str, &str)] = &[
         "Vertical tab strips (sliding panes)",
         "Dikey sekme şeritleri (kayan paneller)",
     ),
-    ("Mini graph in the sidebar", "Kenar çubuğunda mini graf"),
     ("Language", "Dil"),
     ("Canvas name", "Canvas adı"),
     ("Create canvas", "Canvas oluştur"),
