@@ -1272,10 +1272,31 @@ fn is_table_sep(line: &str) -> bool {
 }
 
 fn parse_table_row(line: &str) -> Vec<String> {
+    // Split on unescaped `|` so a wikilink/embed with a size (`![[a.jpg\|200]]`)
+    // can live inside a cell, matching Obsidian's table syntax.
     let t = line.trim();
-    let t = t.strip_prefix('|').unwrap_or(t);
-    let t = t.strip_suffix('|').unwrap_or(t);
-    t.split('|').map(|c| c.trim().to_string()).collect()
+    let mut cells: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = t.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&'|') => {
+                cur.push('|');
+                chars.next();
+            }
+            '|' => cells.push(std::mem::take(&mut cur)),
+            _ => cur.push(c),
+        }
+    }
+    cells.push(cur);
+    // Edge pipes produce empty cells; drop them.
+    if cells.first().is_some_and(|c| c.trim().is_empty()) {
+        cells.remove(0);
+    }
+    if cells.len() > 1 && cells.last().is_some_and(|c| c.trim().is_empty()) {
+        cells.pop();
+    }
+    cells.into_iter().map(|c| c.trim().to_string()).collect()
 }
 
 fn render_table(
@@ -2402,6 +2423,13 @@ mod tests {
             measured >= avail * 0.95,
             "table should span the column, got {measured} of {avail}"
         );
+    }
+
+    #[test]
+    fn table_rows_keep_escaped_pipes_in_cells() {
+        let cells = parse_table_row("| a | ![[assets/x.jpg\\|200]] | c |");
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[1], "![[assets/x.jpg|200]]");
     }
 
     #[test]
