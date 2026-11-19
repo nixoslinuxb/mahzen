@@ -10680,6 +10680,10 @@ fn draw_inline_image(
 }
 
 fn media_links(text: &str) -> Vec<MediaRef> {
+    // Obsidian escapes the pipe inside a table cell (`![[img\|200]]`); drop the
+    // backslash so the path and size parse correctly.
+    let normalized = text.replace("\\|", "|");
+    let text = normalized.as_str();
     let mut out: Vec<MediaRef> = Vec::new();
     let mut push = |path: String, w: Option<f32>, h: Option<f32>| {
         if out.iter().any(|m| m.path == path) {
@@ -11766,6 +11770,19 @@ mod tests {
         assert!(matches!(next(ViewMode::Edit), ViewMode::Preview));
         assert!(matches!(next(ViewMode::Preview), ViewMode::Split));
         assert!(matches!(next(ViewMode::Live), ViewMode::Split));
+    }
+
+    #[test]
+    fn escaped_pipe_in_table_image_keeps_the_path_clean() {
+        // Obsidian escapes the size pipe inside a table cell; the backslash must
+        // not end up in the resolved path (that made images invisible).
+        let md = "| A |\n|---|\n| ![[assets/x.jpg\\|200]] |\n";
+        let refs = media_links(md);
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(refs[0].path, "assets/x.jpg");
+        assert_eq!(refs[0].width, Some(200.0));
+        // The attachment strip must not draw table images a second time.
+        assert!(media_links_outside_tables(md).is_empty());
     }
 
     #[test]
