@@ -708,6 +708,16 @@ pub struct EncryptedNoteApp {
     /// Optional tag filter: when set, the sidebar lists notes with this tag.
     tag_filter: Option<String>,
 
+    /// Bumped whenever the vault index is rebuilt; invalidates caches.
+    index_gen: u64,
+    /// Cached ```query``` snapshot for the current index generation.
+    docs_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<query::Doc>>)>>,
+    /// Plaintext of notes shown in the preview, so wikilinks do not re-read the
+    /// disk on every frame.
+    preview_cache: std::cell::RefCell<HashMap<PathBuf, String>>,
+    /// Hash of the body whose images were last pre-loaded.
+    warmed_media: Option<u64>,
+
     // Indexes over the vault (titles, aliases, tags, links).
     index: NoteIndex,
     metas: BTreeMap<PathBuf, frontmatter::Meta>,
@@ -942,6 +952,10 @@ impl EncryptedNoteApp {
             show_search_results: false,
             expanded_dirs: HashSet::new(),
             tag_filter: None,
+            index_gen: 0,
+            docs_cache: std::cell::RefCell::new(None),
+            preview_cache: std::cell::RefCell::new(HashMap::new()),
+            warmed_media: None,
             index: NoteIndex::default(),
             metas: BTreeMap::new(),
             titles: BTreeMap::new(),
@@ -1084,6 +1098,7 @@ impl EncryptedNoteApp {
 
     /// Write a note as plain Markdown text.
     fn write_note(&self, path: &Path, text: &str) -> std::io::Result<()> {
+        self.preview_cache.borrow_mut().remove(path);
         Vault::write_bytes(path, text.as_bytes())
     }
 
@@ -1174,6 +1189,9 @@ impl EncryptedNoteApp {
     /// Rebuild the title/alias/tag/link indexes by reading (and decrypting)
     /// every note once.
     fn rebuild_index(&mut self) {
+        self.index_gen = self.index_gen.wrapping_add(1);
+        *self.docs_cache.borrow_mut() = None;
+        self.preview_cache.borrow_mut().clear();
         let paths: Vec<(PathBuf, String)> = self
             .vault
             .as_ref()
@@ -1220,7 +1238,31 @@ impl EncryptedNoteApp {
     }
 
     /// Build the note snapshot used by ```query blocks.
-    fn query_docs(&self) -> Vec<query::Doc> {
+    /// Cached snapshot of the vault for ```query``` blocks.
+    fn query_docs(&self) -> std::rc::Rc<Vec<query::Doc>> {
+        if let Some((gen, docs)) = self.docs_cache.borrow().as_ref() {
+            if *gen == self.index_gen {
+                return docs.clone();
+            }
+        }
+        let docs = std::rc::Rc::new(self.build_query_docs());
+        *self.docs_cache.borrow_mut() = Some((self.index_gen, docs.clone()));
+        docs
+    }
+
+    /// Read a note for preview rendering, memoised until the index changes.
+    fn preview_text(&self, path: &Path) -> Option<String> {
+        if let Some(t) = self.preview_cache.borrow().get(path) {
+            return Some(t.clone());
+        }
+        let text = self.read_note(path)?;
+        self.preview_cache
+            .borrow_mut()
+            .insert(path.to_path_buf(), text.clone());
+        Some(text)
+    }
+
+    fn build_query_docs(&self) -> Vec<query::Doc> {
         let root = self.vault.as_ref().map(|v| v.root.clone());
         self.index
             .entries()
@@ -4203,6 +4245,14 @@ impl EncryptedNoteApp {
     /// Load textures for every image referenced in `text` (including images
     /// that live inside table cells, which are drawn by the table renderer).
     fn warm_media(&mut self, ctx: &egui::Context, text: &str) {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        let key = h.finish();
+        if self.warmed_media == Some(key) {
+            return;
+        }
+        self.warmed_media = Some(key);
         let Some(root) = self.vault.as_ref().map(|v| v.root.clone()) else {
             return;
         };
@@ -8254,7 +8304,9 @@ impl EncryptedNoteApp {
                 let this: &Self = self;
                 let resolver = move |target: &str| -> Option<(String, String)> {
                     let path = this.index.resolve(target)?;
-                    let text = this.read_note(&path)?;
+                    // Memoised: without this every wikilink re-read the disk on
+                    // every frame, which made large vaults crawl.
+                    let text = this.preview_text(&path)?;
                     let meta = frontmatter::parse(&text);
                     let title = meta.title.unwrap_or_else(|| this.title_of(&path));
                     let body = extract_reference(&meta.body, target);
