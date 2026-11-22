@@ -708,6 +708,11 @@ pub struct EncryptedNoteApp {
     /// Optional tag filter: when set, the sidebar lists notes with this tag.
     tag_filter: Option<String>,
 
+    /// Layout rect captured at the start of the frame. Panel width limits are
+    /// derived from it instead of `Context::screen_rect()`, which on Wayland can
+    /// already report the next compositor size while the frame is being laid
+    /// out — that mismatch pushed panels outside the visible surface.
+    frame_rect: egui::Rect,
     /// Bumped whenever the vault index is rebuilt; invalidates caches.
     index_gen: u64,
     /// Cached ```query``` snapshot for the current index generation.
@@ -952,6 +957,7 @@ impl EncryptedNoteApp {
             show_search_results: false,
             expanded_dirs: HashSet::new(),
             tag_filter: None,
+            frame_rect: egui::Rect::NOTHING,
             index_gen: 0,
             docs_cache: std::cell::RefCell::new(None),
             preview_cache: std::cell::RefCell::new(HashMap::new()),
@@ -5155,8 +5161,8 @@ impl EncryptedNoteApp {
             .default_width(260.0)
             .width_range(
                 160.0
-                    ..=ctx
-                        .screen_rect()
+                    ..=self
+                        .frame_rect
                         .width()
                         .mul_add(0.34, 0.0)
                         .clamp(200.0, 460.0),
@@ -5219,7 +5225,13 @@ impl EncryptedNoteApp {
                                             14.0,
                                             ui.visuals().weak_text_color(),
                                         );
-                                        ui.selectable_label(is_sel, RichText::new(title)).clicked()
+                                        let room =
+                                            ((ui.available_width() - 22.0) / 6.6).max(4.0) as usize;
+                                        ui.selectable_label(
+                                            is_sel,
+                                            RichText::new(ellipsize(&title, room)),
+                                        )
+                                        .clicked()
                                     })
                                     .inner;
                                 if clicked {
@@ -5299,6 +5311,7 @@ impl EncryptedNoteApp {
                                 .collect()
                         });
                     let mut actions = TreeActions::default();
+                    let tree_width = ui.available_width();
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -5309,6 +5322,7 @@ impl EncryptedNoteApp {
                             }
                             show_tree(
                                 ui,
+                                tree_width,
                                 &tree,
                                 selected.as_deref(),
                                 &mut self.expanded_dirs,
@@ -5399,8 +5413,12 @@ impl EncryptedNoteApp {
                     let clicked = ui
                         .horizontal(|ui| {
                             icons::icon(ui, Icon::File, 14.0, ui.visuals().weak_text_color());
-                            ui.add(egui::Button::new(RichText::new(&title).strong()).frame(false))
-                                .clicked()
+                            let room = ((ui.available_width() - 22.0) / 6.6).max(4.0) as usize;
+                            ui.add(
+                                egui::Button::new(RichText::new(ellipsize(&title, room)).strong())
+                                    .frame(false),
+                            )
+                            .clicked()
                         })
                         .inner;
                     if clicked {
@@ -5408,7 +5426,8 @@ impl EncryptedNoteApp {
                         self.show_search_results = false;
                     }
                     if !snippet.is_empty() {
-                        ui.label(RichText::new(snippet).weak().small());
+                        let room = (ui.available_width() / 5.6).max(4.0) as usize;
+                        ui.label(RichText::new(ellipsize(&snippet, room)).weak().small());
                     }
                     ui.separator();
                 }
@@ -5428,8 +5447,8 @@ impl EncryptedNoteApp {
             .default_width(280.0)
             .width_range(
                 180.0
-                    ..=ctx
-                        .screen_rect()
+                    ..=self
+                        .frame_rect
                         .width()
                         .mul_add(0.32, 0.0)
                         .clamp(220.0, 480.0),
@@ -10154,6 +10173,9 @@ impl EncryptedNoteApp {
 
 impl eframe::App for EncryptedNoteApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Freeze the layout rect for this frame before anything is drawn.
+        self.frame_rect = ctx.available_rect();
+
         // On the first frame, report which GPU we're rendering with.
         if !self.logged_renderer {
             self.logged_renderer = true;
@@ -10238,7 +10260,7 @@ impl eframe::App for EncryptedNoteApp {
         }
         // Remember the windowed size so leaving fullscreen restores it.
         if self.window_mode == WindowMode::Windowed {
-            let size = ctx.screen_rect().size();
+            let size = self.frame_rect.size();
             if size.x > 320.0 && size.y > 240.0 {
                 self.windowed_size = Some(size);
             }
@@ -10397,6 +10419,7 @@ fn collect_dir_rels(node: &TreeNode, out: &mut HashSet<PathBuf>) {
 #[allow(clippy::too_many_arguments)]
 fn show_tree(
     ui: &mut egui::Ui,
+    width: f32,
     node: &TreeNode,
     selected: Option<&Path>,
     expanded: &mut HashSet<PathBuf>,
@@ -10406,6 +10429,12 @@ fn show_tree(
     actions: &mut TreeActions,
 ) {
     let weak = ui.visuals().weak_text_color();
+    // `width` is the fixed budget of the file tree, captured from the panel at
+    // the top level. Without it a single long title made egui report a content
+    // rect wider than the panel, which in turn pushed the whole layout to the
+    // right (the right panel ended up drawn outside the window).
+    let width = width.max(60.0);
+    ui.set_max_width(width);
     for dir in &node.dirs {
         let is_open = expanded.contains(&dir.rel);
         let mut toggle = false;
@@ -10420,10 +10449,14 @@ fn show_tree(
                 toggle = true;
             }
             icons::icon(ui, Icon::Folder, 14.0, theme::ACCENT.linear_multiply(0.9));
+            let room = ((width - 60.0) / 6.6).max(6.0) as usize;
             ui.label(
-                RichText::new(format!("{}  ({})", dir.name, dir.note_count()))
-                    .size(12.5)
-                    .color(theme::TEXT),
+                RichText::new(ellipsize(
+                    &format!("{}  ({})", dir.name, dir.note_count()),
+                    room,
+                ))
+                .size(12.5)
+                .color(theme::TEXT),
             );
         });
         if toggle {
@@ -10436,7 +10469,15 @@ fn show_tree(
         if is_open {
             ui.indent(dir.rel.clone(), |ui| {
                 show_tree(
-                    ui, dir, selected, expanded, titles, note_icons, excerpt, actions,
+                    ui,
+                    width - 18.0,
+                    dir,
+                    selected,
+                    expanded,
+                    titles,
+                    note_icons,
+                    excerpt,
+                    actions,
                 );
             });
         }
@@ -10467,6 +10508,10 @@ fn show_tree(
                 .get(&file.path)
                 .cloned()
                 .unwrap_or_else(|| file.title.clone());
+            // Reserve room for the hover actions on the right, then ellipsize so
+            // a long title can never widen the panel.
+            let room = ((width - 60.0) / 6.6).max(4.0) as usize;
+            let label = ellipsize(&label, room);
             if is_selected {
                 // Selected note: a rounded block with the title and a preview of
                 // the note's opening lines (LYT / file-explorer style).
@@ -10476,18 +10521,29 @@ fn show_tree(
                     .rounding(egui::Rounding::same(5.0))
                     .inner_margin(egui::Margin::symmetric(7.0, 5.0))
                     .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(
-                            RichText::new(label.clone())
-                                .size(12.5)
-                                .strong()
-                                .color(theme::TEXT),
-                        );
-                        if let Some(lines) = excerpt {
-                            for l in lines {
-                                ui.label(RichText::new(l).size(10.0).color(theme::TEXT_MUTED));
+                        // The parent is a horizontal layout, so the frame's inner
+                        // ui would lay the preview lines out side by side and blow
+                        // past the panel width. Force a vertical stack and a fixed
+                        // width instead of the (here unbounded) available width.
+                        ui.set_width((width - 24.0).max(40.0));
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(label.clone())
+                                    .size(12.5)
+                                    .strong()
+                                    .color(theme::TEXT),
+                            );
+                            if let Some(lines) = excerpt {
+                                let room = ((width - 30.0) / 5.6).max(4.0) as usize;
+                                for l in lines {
+                                    ui.label(
+                                        RichText::new(ellipsize(l, room))
+                                            .size(10.0)
+                                            .color(theme::TEXT_MUTED),
+                                    );
+                                }
                             }
-                        }
+                        });
                     })
                     .response;
                 ui.painter().rect_filled(
@@ -12010,5 +12066,73 @@ mod split_editor_probe {
             3,
             "every typed character should land once: {text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod panel_layout_probe {
+    use eframe::egui;
+
+    #[test]
+    fn central_panel_never_underlaps_the_right_panel() {
+        let mut central_rect = egui::Rect::NOTHING;
+        let mut right_rect = egui::Rect::NOTHING;
+        let mut left_rect = egui::Rect::NOTHING;
+        egui::__run_test_ctx(|ctx| {
+            for frame in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::pos2(0.0, 0.0),
+                        egui::vec2(1600.0, 900.0),
+                    )),
+                    focused: true,
+                    time: Some(frame as f64 * 0.016),
+                    ..Default::default()
+                };
+                ctx.begin_frame(input);
+                // Mirror the real order in `update()`.
+                egui::SidePanel::left("tool_bar")
+                    .exact_width(40.0)
+                    .resizable(false)
+                    .show(ctx, |ui| {
+                        ui.label("ribbon");
+                    });
+                egui::SidePanel::left("left_panel")
+                    .resizable(true)
+                    .default_width(260.0)
+                    .width_range(160.0..=460.0)
+                    .show(ctx, |ui| {
+                        left_rect = ui.max_rect();
+                    });
+                egui::SidePanel::right("right_panel")
+                    .resizable(true)
+                    .default_width(280.0)
+                    .width_range(180.0..=480.0)
+                    .show(ctx, |ui| {
+                        right_rect = ui.max_rect();
+                    });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    central_rect = ui.max_rect();
+                });
+                let _ = ctx.end_frame();
+            }
+        });
+        assert!(
+            central_rect.max.x <= right_rect.min.x + 0.5,
+            "central panel overlaps the right panel"
+        );
+        assert!(
+            central_rect.min.x >= left_rect.max.x - 0.5,
+            "central panel overlaps the left panel"
+        );
+        // The real invariant: panels never overlap, and the right panel stays
+        // inside the window. (Exact tiling is not guaranteed because egui leaves
+        // resize-handle gaps between panels.)
+        assert!(
+            right_rect.max.x <= 1600.0 + 0.5,
+            "right panel is outside the window: {:?}",
+            right_rect
+        );
+        assert!(right_rect.width() >= 100.0, "right panel collapsed");
     }
 }
